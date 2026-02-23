@@ -535,11 +535,16 @@ function LeaderboardPanel({ standings }: { standings: StandingEntry[] }) {
 }
 
 // ============================================================
-// PART 5: Arena Chat + Trade Log — split view, persistent across rounds
+// PART 5: Arena Chat + Trade Log — 80/20 split, persistent across rounds
 // ============================================================
 
 const NPC_COLORS: Record<string, string> = {
   "Momentum Trader": "text-green-400", "Contrarian": "text-red-400", "Sector Rotator": "text-blue-400", "Value Hunter": "text-purple-400",
+};
+
+// Abbreviate agent names for compact trade log
+const AGENT_ABBREV: Record<string, string> = {
+  "Momentum Trader": "MT", "Contrarian": "CT", "Sector Rotator": "SR", "Value Hunter": "VH",
 };
 
 function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessage[]; onSendMessage: (content: string) => void; round: number }) {
@@ -567,9 +572,9 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {/* ARENA CHAT — 60% */}
-      <div className="flex flex-col" style={{ flex: tradeLogCollapsed ? "1 1 auto" : "0 0 60%" }}>
-        <div className="px-3 py-1.5 border-b border-neutral-800">
+      {/* ARENA CHAT — 80% (the star) */}
+      <div className="flex flex-col min-h-0" style={{ flex: tradeLogCollapsed ? "1 1 auto" : "4 1 0%" }}>
+        <div className="px-3 py-1.5 border-b border-neutral-800 shrink-0">
           <h2 className="text-[10px] font-semibold uppercase tracking-wider text-cyan-500">Arena Chat</h2>
         </div>
         <div className="flex-1 overflow-y-auto px-3 py-1.5 space-y-0.5 min-h-0">
@@ -592,13 +597,12 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
             }
 
             if (m.isSystem) {
-              const icon = m.systemType === "news" ? "\uD83D\uDCF0" : "\u26A1";
               const color = m.systemType === "news" ? "text-amber-500/80" : "text-neutral-500";
               return (
                 <div key={m.id}>
                   {separator}
                   <div className={`text-[11px] leading-relaxed ${color}`}>
-                    <span className="mr-1">{icon}</span>{m.message}
+                    {m.message}
                   </div>
                 </div>
               );
@@ -606,9 +610,8 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
             return (
               <div key={m.id}>
                 {separator}
-                <div className="text-[13px] leading-relaxed">
+                <div className="text-[14px] leading-relaxed">
                   <span className={`font-semibold ${m.isUser ? "text-amber-400" : (NPC_COLORS[m.agentName] || "text-cyan-400")}`}>{m.agentName}</span>
-                  {m.agentModel && !m.isUser && <span className="text-[8px] text-neutral-600 font-[family-name:var(--font-geist-mono)] ml-1">{m.agentModel}</span>}
                   <span className="text-neutral-600">: </span>
                   <span className="text-neutral-300">{m.message}</span>
                 </div>
@@ -617,7 +620,7 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
           })}
           <div ref={chatEndRef} />
         </div>
-        <div className="px-3 py-1 border-t border-neutral-800/50">
+        <div className="px-3 py-1 border-t border-neutral-800/50 shrink-0">
           <div className="flex gap-1.5">
             <input type="text" value={input} onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSend()} placeholder="Chat..."
@@ -628,21 +631,21 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
         </div>
       </div>
 
-      {/* TRADE LOG — 40% (collapsible) */}
-      <div className={`flex flex-col border-t border-neutral-800 ${tradeLogCollapsed ? "" : "flex-[0_0_40%]"}`}>
+      {/* TRADE LOG — 20% (compact, collapsible) */}
+      <div className={`flex flex-col border-t border-neutral-800 shrink-0 ${tradeLogCollapsed ? "" : "min-h-0"}`}
+        style={tradeLogCollapsed ? undefined : { flex: "1 1 0%", maxHeight: "20%" }}>
         <button onClick={() => setTradeLogCollapsed(!tradeLogCollapsed)}
-          className="px-3 py-1.5 flex items-center justify-between hover:bg-neutral-800/30 transition-colors shrink-0">
-          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
-            Trade Log <span className="text-neutral-600 ml-1">({tradeMessages.length})</span>
+          className="px-3 py-1 flex items-center justify-between hover:bg-neutral-800/30 transition-colors shrink-0">
+          <h2 className="text-[9px] font-semibold uppercase tracking-wider text-neutral-600">
+            Trade Log <span className="text-neutral-700 ml-0.5">({tradeMessages.length})</span>
           </h2>
-          <span className="text-neutral-600 text-[10px]">{tradeLogCollapsed ? "\u25BC" : "\u25B2"}</span>
+          <span className="text-neutral-700 text-[9px]">{tradeLogCollapsed ? "\u25BC" : "\u25B2"}</span>
         </button>
         {!tradeLogCollapsed && (
-          <div className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5 min-h-0">
-            {tradeMessages.length === 0 && <span className="text-[10px] text-neutral-600">No trades yet...</span>}
+          <div className="flex-1 overflow-y-auto px-3 py-0.5 min-h-0">
+            {tradeMessages.length === 0 && <span className="text-[9px] text-neutral-700">No trades yet</span>}
             {tradeMessages.map((m) => {
               let separator = null;
-              // Insert round separators based on preceding system messages
               const msgIdx = messages.indexOf(m);
               for (let i = msgIdx - 1; i >= 0; i--) {
                 const prev = messages[i];
@@ -652,9 +655,9 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
                   if (msgRound > lastTradeRound) {
                     lastTradeRound = msgRound;
                     separator = (
-                      <div key={`tsep-${msgRound}`} className="flex items-center gap-2 py-1 my-0.5">
+                      <div key={`tsep-${msgRound}`} className="flex items-center gap-1 py-0.5">
                         <div className="flex-1 h-px bg-neutral-800/50" />
-                        <span className="text-[8px] font-bold text-neutral-700 uppercase tracking-wider">R{msgRound}</span>
+                        <span className="text-[7px] font-bold text-neutral-700 uppercase">R{msgRound}</span>
                         <div className="flex-1 h-px bg-neutral-800/50" />
                       </div>
                     );
@@ -663,18 +666,15 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
                 }
               }
 
-              const icon = m.systemType === "user_trade" ? "\uD83D\uDC64" : "\uD83E\uDD16";
-              const color = m.systemType === "user_trade" ? "text-blue-400/70" : "text-neutral-500";
+              // Compact one-line format: "MT: LONG 100 NVDA @ $196"
+              const abbrev = AGENT_ABBREV[m.agentName] || m.agentName.slice(0, 3).toUpperCase();
+              const isUser = m.systemType === "user_trade";
               return (
                 <div key={m.id}>
                   {separator}
-                  <div className={`text-[11px] leading-snug ${color}`}>
-                    <span className="mr-0.5">{icon}</span>
-                    {m.systemType === "npc_trade" && (
-                      <><span className="font-medium text-neutral-400">{m.agentName}</span>
-                      {m.agentModel && <span className="text-[8px] text-neutral-700 font-[family-name:var(--font-geist-mono)] mx-0.5">{m.agentModel}</span>}
-                      <span className="text-neutral-600">: </span></>
-                    )}
+                  <div className="text-[11px] leading-tight text-neutral-600 font-[family-name:var(--font-geist-mono)] truncate">
+                    <span className={isUser ? "text-amber-500/60" : "text-neutral-500"}>{isUser ? "YOU" : abbrev}</span>
+                    <span className="text-neutral-700">: </span>
                     <span className="text-neutral-500">{m.message}</span>
                   </div>
                 </div>
