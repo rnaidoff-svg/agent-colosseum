@@ -428,10 +428,17 @@ function WarRoomThread({ live }: { live: LiveOrderState }) {
         </div>
       )}
 
-      {live.step === "general" && (
+      {live.step === "general" && live.delegation && (
         <div className="flex items-center gap-2 text-neutral-500 text-xs pl-4 animate-pulse">
           <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
-          Delegating to {live.delegation?.lieutenantName || "Lieutenant"}...
+          Delegating to {live.delegation.lieutenantName}...
+        </div>
+      )}
+
+      {/* No delegation warning */}
+      {live.generalResponse && !live.delegation && live.step !== "commander" && !live.error && (
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-3">
+          <p className="text-xs text-yellow-400">No delegation detected — the General may not have identified a Lieutenant to delegate to.</p>
         </div>
       )}
 
@@ -449,6 +456,12 @@ function WarRoomThread({ live }: { live: LiveOrderState }) {
       {live.lieutenantResponse && live.soldierUpdates.length > 0 && (
         <div className="flex items-center gap-2 text-blue-500/70 text-[10px] pl-6 font-semibold uppercase tracking-wider">
           <span className="text-blue-500">{"\u2192"}</span> Pushed to {live.soldierUpdates.map(su => su.agentName).join(", ")}
+        </div>
+      )}
+
+      {live.lieutenantResponse && live.soldierUpdates.length === 0 && live.step === "approval" && (
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-3">
+          <p className="text-xs text-yellow-400">Lieutenant responded but no soldier prompt changes were detected. The response may not have used the expected JSON format.</p>
         </div>
       )}
 
@@ -1003,23 +1016,30 @@ export default function CommandCenterPage() {
         body: JSON.stringify({ message: msg, autoApprove }),
       });
       const data = await res.json();
+      console.log("[WAR ROOM] API response:", { orderId: data.orderId, status: data.status, hasDelegation: !!data.delegation, soldierCount: data.soldierUpdates?.length || 0, error: data.error });
 
+      // Show General's response
       setLive(prev => prev ? {
         ...prev, step: "general", generalResponse: data.generalResponse, delegation: data.delegation, orderId: data.orderId,
         activePath: data.delegation ? ["general", data.delegation.lieutenantId] : ["general"],
+        error: !data.generalResponse ? (data.error || "The General failed to respond") : (data.error && !data.delegation ? data.error : null),
       } : null);
 
       if (data.delegation) {
         await new Promise(r => setTimeout(r, 1200));
+
+        // Show Lieutenant's response
         const affectedSoldierIds = (data.soldierUpdates || []).map((su: SoldierUpdate) => su.agentId);
         setLive(prev => prev ? {
           ...prev, step: "lieutenant", lieutenantResponse: data.lieutenantResponse,
           activePath: [data.delegation.lieutenantId, ...affectedSoldierIds],
+          error: !data.lieutenantResponse ? (data.error || "Lieutenant failed to respond") : null,
         } : null);
 
         await new Promise(r => setTimeout(r, 1000));
 
         if (data.soldierUpdates && data.soldierUpdates.length > 0) {
+          // Animate soldier updates one by one
           const allSoldierIds = data.soldierUpdates.map((su: SoldierUpdate) => su.agentId);
           for (let i = 0; i < data.soldierUpdates.length; i++) {
             await new Promise(r => setTimeout(r, 600));
@@ -1037,8 +1057,18 @@ export default function CommandCenterPage() {
             });
           }
         } else {
-          setLive(prev => prev ? { ...prev, step: "approval", activePath: [] } : null);
+          // Lieutenant responded but no parseable soldier changes
+          setLive(prev => prev ? {
+            ...prev, step: "approval", activePath: [],
+            error: data.lieutenantResponse ? "Lieutenant responded but no soldier prompt changes were detected. The response may not have used the expected JSON format." : prev.error,
+          } : null);
         }
+      } else if (!data.error) {
+        // General responded but no delegation identified
+        setLive(prev => prev ? {
+          ...prev,
+          error: "The General responded but did not delegate to a Lieutenant. This may mean the order was unclear or the General's response didn't use the expected DELEGATION format.",
+        } : null);
       }
 
       if (data.status === "executed") {
@@ -1046,11 +1076,13 @@ export default function CommandCenterPage() {
         setLive(prev => prev ? {
           ...prev, status: "executed", step: "done",
           approvedAgents: new Set(allIds), flashGreen: new Set(allIds), activePath: [],
+          error: null,
         } : null);
         await loadData();
         setTimeout(() => { setLive(prev => prev ? { ...prev, flashGreen: new Set() } : null); }, 2000);
       }
-    } catch {
+    } catch (err) {
+      console.error("[WAR ROOM] Command failed:", err);
       setLive(prev => prev ? { ...prev, error: "Failed to send command. Check API key and try again.", step: "done", activePath: [] } : null);
     }
     setSending(false);
