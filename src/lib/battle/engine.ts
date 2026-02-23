@@ -76,7 +76,7 @@ export interface StandingEntry {
 
 export interface AgentStrategyRec {
   trades: {
-    action: "LONG" | "SHORT";
+    action: "LONG" | "SHORT" | "CLOSE_LONG" | "CLOSE_SHORT";
     ticker: string;
     qty: number;
     dollarAmt: number;

@@ -209,6 +209,9 @@ export function useBattle(
   const userTradesRef = useRef(userTrades);
   userTradesRef.current = userTrades;
 
+  // -- doExecuteStrategy ref (breaks circular dependency with fetchAgentStrategy) --
+  const doExecuteStrategyRef = useRef<((strategy: AgentStrategyRec) => { executed: number; failed: number; skipped: number; details: string[] }) | null>(null);
+
   // -- Helpers --
   const addEvent = useCallback((type: EventEntry["type"], message: string) => {
     eventIdRef.current++;
@@ -403,39 +406,117 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
       const data = await res.json();
 
       if (isUpdate) {
+        const adjTrades = (data.trades || []).map((t: Record<string, unknown>) => ({
+          action: t.action as string,
+          ticker: t.ticker as string,
+          qty: t.qty as number,
+          reason: (t.reason as string) || "",
+        }));
+
+        // PART 1: If autopilot, execute adjustment trades immediately before setting state
+        let adjExecuted = false;
+        if (autopilotRef.current && phaseRef.current === "trading" && adjTrades.length > 0) {
+          const currentStocks = stocksRef.current;
+          let execCount = 0;
+          for (const trade of adjTrades) {
+            const stock = currentStocks.find((s) => s.ticker === trade.ticker);
+            if (!stock) continue;
+            const cashBefore = userPortfolioRef.current.cash;
+            if (trade.action === "LONG") {
+              let qty = trade.qty;
+              const maxAffordable = Math.floor(userPortfolioRef.current.cash / stock.price);
+              if (qty > maxAffordable) { if (maxAffordable <= 0) continue; qty = maxAffordable; }
+              const result = executeLong(userPortfolioRef.current, currentStocks, trade.ticker, qty);
+              if (result.ok) {
+                userPortfolioRef.current = result.portfolio;
+                setUserPortfolio(result.portfolio);
+                const tradeInfo: TradeInfo = { ticker: trade.ticker, action: "LONG", qty, price: stock.price };
+                setUserTrades((prev) => [...prev, tradeInfo]);
+                recordTrade(userName, tradeInfo, data.reasoning || "");
+                addEvent("user_trade", `AUTO-ADJ: LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+                execCount++;
+                console.log(`[AUTO-ADJ] OK LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)}`);
+              }
+            } else if (trade.action === "SHORT") {
+              let qty = trade.qty;
+              const maxAffordable = Math.floor(userPortfolioRef.current.cash / stock.price);
+              if (qty > maxAffordable) { if (maxAffordable <= 0) continue; qty = maxAffordable; }
+              const result = executeShort(userPortfolioRef.current, currentStocks, trade.ticker, qty);
+              if (result.ok) {
+                userPortfolioRef.current = result.portfolio;
+                setUserPortfolio(result.portfolio);
+                const tradeInfo: TradeInfo = { ticker: trade.ticker, action: "SHORT", qty, price: stock.price };
+                setUserTrades((prev) => [...prev, tradeInfo]);
+                recordTrade(userName, tradeInfo, data.reasoning || "");
+                addEvent("user_trade", `AUTO-ADJ: SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+                execCount++;
+                console.log(`[AUTO-ADJ] OK SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)}`);
+              }
+            } else if (trade.action === "CLOSE_LONG" || trade.action === "CLOSE_SHORT") {
+              const existing = userPortfolioRef.current.positions[trade.ticker];
+              if (!existing) continue;
+              const qty = Math.min(trade.qty, existing.qty);
+              const result = closePosition(userPortfolioRef.current, currentStocks, trade.ticker, qty);
+              if (result.ok) {
+                userPortfolioRef.current = result.portfolio;
+                setUserPortfolio(result.portfolio);
+                const tradeInfo: TradeInfo = { ticker: trade.ticker, action: trade.action as TradeInfo["action"], qty, price: stock.price };
+                setUserTrades((prev) => [...prev, tradeInfo]);
+                recordTrade(userName, tradeInfo, data.reasoning || "");
+                addEvent("user_trade", `AUTO-ADJ: Closed ${result.side.toUpperCase()} ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+                execCount++;
+                console.log(`[AUTO-ADJ] OK ${trade.action} ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)}`);
+              }
+            }
+          }
+          adjExecuted = true;
+          if (execCount > 0) console.log(`[AUTO-ADJ] Auto-executed ${execCount} adjustment trades`);
+        }
+
         const adjustment: AgentAdjustment = {
           headline: newsHeadline || "Market update",
           reasoning: data.reasoning || data.content || "No response",
-          trades: (data.trades || []).map((t: Record<string, unknown>) => ({
-            action: t.action as string,
-            ticker: t.ticker as string,
-            qty: t.qty as number,
-            reason: (t.reason as string) || "",
-          })),
-          executed: false,
+          trades: adjTrades,
+          executed: adjExecuted,
         };
         setAgentAdjustments([adjustment]); // Replace old adjustments
       } else {
         if (data.trades && data.trades.length > 0) {
-          const newStrategy = {
+          const newStrategy: AgentStrategyRec = {
             trades: data.trades,
             cashReserve: data.cashReserve ?? 0,
             summary: data.summary || data.content || "",
           };
-          setAgentStrategy(newStrategy);
-          setStrategyExecuted(false);
-          agentStrategyRef.current = newStrategy;
-          strategyExecutedRef.current = false;
+
+          // PART 1: If autopilot, execute strategy immediately before setting state
+          // This ensures strategyExecuted=true in the same render batch, so no PENDING flash
+          if (autopilotRef.current && phaseRef.current === "trading" && doExecuteStrategyRef.current) {
+            const result = doExecuteStrategyRef.current(newStrategy);
+            setAgentStrategy(newStrategy);
+            setStrategyExecuted(true);
+            agentStrategyRef.current = newStrategy;
+            strategyExecutedRef.current = true;
+            if (result.executed > 0) {
+              console.log(`[AUTO-AGENT] Auto-executed ${result.executed} strategy trades (${result.failed} failed, ${result.skipped} skipped)`);
+            }
+          } else {
+            setAgentStrategy(newStrategy);
+            setStrategyExecuted(false);
+            agentStrategyRef.current = newStrategy;
+            strategyExecutedRef.current = false;
+          }
         } else if (data.content) {
-          const newStrategy = {
+          const newStrategy: AgentStrategyRec = {
             trades: [],
             cashReserve: userPortfolioRef.current.cash,
             summary: data.content,
           };
           setAgentStrategy(newStrategy);
-          setStrategyExecuted(false);
+          // No trades to execute, mark as executed if autopilot
+          const isExec = autopilotRef.current;
+          setStrategyExecuted(isExec);
           agentStrategyRef.current = newStrategy;
-          strategyExecutedRef.current = false;
+          strategyExecutedRef.current = isExec;
         }
       }
     } catch (err) {
@@ -453,7 +534,8 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
         setStrategyLoading(false);
       }
     }
-  }, [userModelId, userSystemPrompt, userStrategy, customPrompt, buildPositionSummary]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userModelId, userSystemPrompt, userStrategy, customPrompt, buildPositionSummary, addEvent, recordTrade, userName]);
 
   // -- Execute strategy helper (used by both manual and autopilot) --
   const doExecuteStrategy = useCallback((strategy: AgentStrategyRec): { executed: number; failed: number; skipped: number; details: string[] } => {
@@ -464,16 +546,23 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
     let failed = 0;
     let skipped = 0;
     const details: string[] = [];
+    const autoPrefix = autopilotRef.current ? "AUTO: " : "";
+
+    console.log(`[TRADE-EXEC] Executing strategy: ${strategy.trades.length} trades, cash=$${userPortfolioRef.current.cash.toFixed(2)}`);
 
     for (const trade of strategy.trades) {
       const stock = currentStocks.find((s) => s.ticker === trade.ticker);
-      if (!stock) { failed++; details.push(`${trade.ticker}: unknown stock`); continue; }
+      if (!stock) { failed++; details.push(`${trade.ticker}: unknown stock`); console.log(`[TRADE-EXEC] SKIP ${trade.action} ${trade.ticker}: unknown stock`); continue; }
+
+      const cashBefore = userPortfolioRef.current.cash;
+      const posBefore = userPortfolioRef.current.positions[trade.ticker];
 
       if (trade.action === "LONG") {
         let qty = trade.qty;
         const maxAffordable = Math.floor(userPortfolioRef.current.cash / stock.price);
         if (qty > maxAffordable) {
-          if (maxAffordable <= 0) { skipped++; details.push(`${trade.action} ${trade.ticker}: insufficient cash`); continue; }
+          if (maxAffordable <= 0) { skipped++; details.push(`LONG ${trade.ticker}: insufficient cash ($${userPortfolioRef.current.cash.toFixed(0)})`); console.log(`[TRADE-EXEC] SKIP LONG ${trade.ticker}: insufficient cash=$${userPortfolioRef.current.cash.toFixed(0)}, need=$${(trade.qty * stock.price).toFixed(0)}`); continue; }
+          console.log(`[TRADE-EXEC] CLAMP LONG ${trade.ticker}: ${trade.qty} → ${maxAffordable} (cash=$${userPortfolioRef.current.cash.toFixed(0)}, price=$${stock.price.toFixed(2)})`);
           qty = maxAffordable;
         }
         const result = executeLong(userPortfolioRef.current, currentStocks, trade.ticker, qty);
@@ -484,18 +573,22 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
           setUserTrades((prev) => [...prev, tradeInfo]);
           recordTrade(userName, tradeInfo, strategy.summary);
           recordDecision(userName, userModelId, tradeInfo, trade.reason || strategy.summary);
-          addEvent("user_trade", `${autopilotRef.current ? "AUTO: " : ""}LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          addEvent("user_trade", `${autoPrefix}LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
           executed++;
           details.push(`LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          const posAfter = result.portfolio.positions[trade.ticker];
+          console.log(`[TRADE-EXEC] OK LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)} | pos: ${posBefore ? `${posBefore.qty}@${posBefore.avgCost.toFixed(2)}` : "none"} → ${posAfter ? `${posAfter.qty}@${posAfter.avgCost.toFixed(2)}` : "none"}`);
         } else {
           failed++;
-          details.push(`${trade.action} ${trade.ticker}: ${result.reason}`);
+          details.push(`LONG ${trade.ticker}: ${result.reason}`);
+          console.log(`[TRADE-EXEC] FAIL LONG ${trade.ticker}: ${result.reason}`);
         }
       } else if (trade.action === "SHORT") {
         let qty = trade.qty;
         const maxAffordable = Math.floor(userPortfolioRef.current.cash / stock.price);
         if (qty > maxAffordable) {
-          if (maxAffordable <= 0) { skipped++; details.push(`${trade.action} ${trade.ticker}: insufficient margin`); continue; }
+          if (maxAffordable <= 0) { skipped++; details.push(`SHORT ${trade.ticker}: insufficient margin ($${userPortfolioRef.current.cash.toFixed(0)})`); console.log(`[TRADE-EXEC] SKIP SHORT ${trade.ticker}: insufficient margin=$${userPortfolioRef.current.cash.toFixed(0)}, need=$${(trade.qty * stock.price).toFixed(0)}`); continue; }
+          console.log(`[TRADE-EXEC] CLAMP SHORT ${trade.ticker}: ${trade.qty} → ${maxAffordable} (cash=$${userPortfolioRef.current.cash.toFixed(0)}, price=$${stock.price.toFixed(2)})`);
           qty = maxAffordable;
         }
         const result = executeShort(userPortfolioRef.current, currentStocks, trade.ticker, qty);
@@ -506,18 +599,45 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
           setUserTrades((prev) => [...prev, tradeInfo]);
           recordTrade(userName, tradeInfo, strategy.summary);
           recordDecision(userName, userModelId, tradeInfo, trade.reason || strategy.summary);
-          addEvent("user_trade", `${autopilotRef.current ? "AUTO: " : ""}SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          addEvent("user_trade", `${autoPrefix}SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
           executed++;
           details.push(`SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          const posAfter = result.portfolio.positions[trade.ticker];
+          console.log(`[TRADE-EXEC] OK SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)} | pos: ${posBefore ? `${posBefore.qty}@${posBefore.avgCost.toFixed(2)}` : "none"} → ${posAfter ? `${posAfter.qty}@${posAfter.avgCost.toFixed(2)}` : "none"}`);
+        } else {
+          failed++;
+          details.push(`SHORT ${trade.ticker}: ${result.reason}`);
+          console.log(`[TRADE-EXEC] FAIL SHORT ${trade.ticker}: ${result.reason}`);
+        }
+      } else if (trade.action === "CLOSE_LONG" || trade.action === "CLOSE_SHORT") {
+        const existing = userPortfolioRef.current.positions[trade.ticker];
+        if (!existing) { skipped++; details.push(`${trade.action} ${trade.ticker}: no position`); console.log(`[TRADE-EXEC] SKIP ${trade.action} ${trade.ticker}: no open position`); continue; }
+        const qty = Math.min(trade.qty, existing.qty);
+        const result = closePosition(userPortfolioRef.current, currentStocks, trade.ticker, qty);
+        if (result.ok) {
+          setUserPortfolio(result.portfolio);
+          userPortfolioRef.current = result.portfolio;
+          const tradeInfo: TradeInfo = { ticker: trade.ticker, action: trade.action, qty, price: stock.price };
+          setUserTrades((prev) => [...prev, tradeInfo]);
+          recordTrade(userName, tradeInfo, strategy.summary);
+          recordDecision(userName, userModelId, tradeInfo, trade.reason || strategy.summary);
+          addEvent("user_trade", `${autoPrefix}Closed ${result.side.toUpperCase()} ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          executed++;
+          details.push(`${trade.action} ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          const posAfter = result.portfolio.positions[trade.ticker];
+          console.log(`[TRADE-EXEC] OK ${trade.action} ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)} | pos: ${posBefore ? `${posBefore.qty}@${posBefore.avgCost.toFixed(2)}` : "none"} → ${posAfter ? `${posAfter.qty}@${posAfter.avgCost.toFixed(2)}` : "closed"}`);
         } else {
           failed++;
           details.push(`${trade.action} ${trade.ticker}: ${result.reason}`);
+          console.log(`[TRADE-EXEC] FAIL ${trade.action} ${trade.ticker}: ${result.reason}`);
         }
       }
     }
 
+    console.log(`[TRADE-EXEC] Strategy complete: ${executed} executed, ${failed} failed, ${skipped} skipped | final cash=$${userPortfolioRef.current.cash.toFixed(0)}`);
     return { executed, failed, skipped, details };
   }, [addEvent, recordTrade, recordDecision, userName, userModelId]);
+  doExecuteStrategyRef.current = doExecuteStrategy;
 
   // -- Execute strategy (all trades at once) --
   const executeStrategy = useCallback((): { executed: number; failed: number; skipped: number; details: string[] } => {
@@ -539,46 +659,74 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
     const currentStocks = stocksRef.current;
     let executed = 0;
     let failed = 0;
-    const skipped = 0;
+    let skipped = 0;
     const details: string[] = [];
+    const autoPrefix = autopilotRef.current ? "AUTO-ADJ: " : "ADJ: ";
+
+    console.log(`[TRADE-ADJ] Executing adjustment: ${adj.trades.length} trades, headline="${adj.headline}", cash=$${userPortfolioRef.current.cash.toFixed(2)}`);
 
     for (const trade of adj.trades) {
       const stock = currentStocks.find((s) => s.ticker === trade.ticker);
-      if (!stock) { failed++; continue; }
+      if (!stock) { failed++; details.push(`${trade.ticker}: unknown stock`); console.log(`[TRADE-ADJ] SKIP ${trade.action} ${trade.ticker}: unknown stock`); continue; }
+
+      const cashBefore = userPortfolioRef.current.cash;
 
       if (trade.action === "LONG") {
-        const result = executeLong(userPortfolioRef.current, currentStocks, trade.ticker, trade.qty);
+        let qty = trade.qty;
+        const maxAffordable = Math.floor(userPortfolioRef.current.cash / stock.price);
+        if (qty > maxAffordable) {
+          if (maxAffordable <= 0) { skipped++; details.push(`LONG ${trade.ticker}: insufficient cash`); console.log(`[TRADE-ADJ] SKIP LONG ${trade.ticker}: insufficient cash=$${userPortfolioRef.current.cash.toFixed(0)}`); continue; }
+          console.log(`[TRADE-ADJ] CLAMP LONG ${trade.ticker}: ${qty} → ${maxAffordable}`);
+          qty = maxAffordable;
+        }
+        const result = executeLong(userPortfolioRef.current, currentStocks, trade.ticker, qty);
         if (result.ok) {
           setUserPortfolio(result.portfolio);
           userPortfolioRef.current = result.portfolio;
-          const tradeInfo: TradeInfo = { ticker: trade.ticker, action: "LONG", qty: trade.qty, price: stock.price };
+          const tradeInfo: TradeInfo = { ticker: trade.ticker, action: "LONG", qty, price: stock.price };
           setUserTrades((prev) => [...prev, tradeInfo]);
           recordTrade(userName, tradeInfo, adj.reasoning);
-          addEvent("user_trade", `${autopilotRef.current ? "AUTO: " : ""}LONG ${trade.qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          addEvent("user_trade", `${autoPrefix}LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
           executed++;
-        } else { failed++; }
+          details.push(`LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          console.log(`[TRADE-ADJ] OK LONG ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)}`);
+        } else { failed++; details.push(`LONG ${trade.ticker}: ${result.reason}`); console.log(`[TRADE-ADJ] FAIL LONG ${trade.ticker}: ${result.reason}`); }
       } else if (trade.action === "SHORT") {
-        const result = executeShort(userPortfolioRef.current, currentStocks, trade.ticker, trade.qty);
+        let qty = trade.qty;
+        const maxAffordable = Math.floor(userPortfolioRef.current.cash / stock.price);
+        if (qty > maxAffordable) {
+          if (maxAffordable <= 0) { skipped++; details.push(`SHORT ${trade.ticker}: insufficient margin`); console.log(`[TRADE-ADJ] SKIP SHORT ${trade.ticker}: insufficient margin=$${userPortfolioRef.current.cash.toFixed(0)}`); continue; }
+          console.log(`[TRADE-ADJ] CLAMP SHORT ${trade.ticker}: ${qty} → ${maxAffordable}`);
+          qty = maxAffordable;
+        }
+        const result = executeShort(userPortfolioRef.current, currentStocks, trade.ticker, qty);
         if (result.ok) {
           setUserPortfolio(result.portfolio);
           userPortfolioRef.current = result.portfolio;
-          const tradeInfo: TradeInfo = { ticker: trade.ticker, action: "SHORT", qty: trade.qty, price: stock.price };
+          const tradeInfo: TradeInfo = { ticker: trade.ticker, action: "SHORT", qty, price: stock.price };
           setUserTrades((prev) => [...prev, tradeInfo]);
           recordTrade(userName, tradeInfo, adj.reasoning);
-          addEvent("user_trade", `${autopilotRef.current ? "AUTO: " : ""}SHORT ${trade.qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          addEvent("user_trade", `${autoPrefix}SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
           executed++;
-        } else { failed++; }
+          details.push(`SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          console.log(`[TRADE-ADJ] OK SHORT ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)}`);
+        } else { failed++; details.push(`SHORT ${trade.ticker}: ${result.reason}`); console.log(`[TRADE-ADJ] FAIL SHORT ${trade.ticker}: ${result.reason}`); }
       } else if (trade.action === "CLOSE_LONG" || trade.action === "CLOSE_SHORT") {
-        const result = closePosition(userPortfolioRef.current, currentStocks, trade.ticker, trade.qty);
+        const existing = userPortfolioRef.current.positions[trade.ticker];
+        if (!existing) { skipped++; details.push(`${trade.action} ${trade.ticker}: no position`); console.log(`[TRADE-ADJ] SKIP ${trade.action} ${trade.ticker}: no open position`); continue; }
+        const qty = Math.min(trade.qty, existing.qty);
+        const result = closePosition(userPortfolioRef.current, currentStocks, trade.ticker, qty);
         if (result.ok) {
           setUserPortfolio(result.portfolio);
           userPortfolioRef.current = result.portfolio;
-          const tradeInfo: TradeInfo = { ticker: trade.ticker, action: trade.action, qty: trade.qty, price: stock.price };
+          const tradeInfo: TradeInfo = { ticker: trade.ticker, action: trade.action, qty, price: stock.price };
           setUserTrades((prev) => [...prev, tradeInfo]);
           recordTrade(userName, tradeInfo, adj.reasoning);
-          addEvent("user_trade", `${autopilotRef.current ? "AUTO: " : ""}Closed ${result.side.toUpperCase()} ${trade.qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          addEvent("user_trade", `${autoPrefix}Closed ${result.side.toUpperCase()} ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
           executed++;
-        } else { failed++; }
+          details.push(`${trade.action} ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)}`);
+          console.log(`[TRADE-ADJ] OK ${trade.action} ${qty}x ${trade.ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)}`);
+        } else { failed++; details.push(`${trade.action} ${trade.ticker}: ${result.reason}`); console.log(`[TRADE-ADJ] FAIL ${trade.action} ${trade.ticker}: ${result.reason}`); }
       }
     }
 
@@ -586,6 +734,7 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
       prev.map((a, i) => (i === index ? { ...a, executed: true } : a))
     );
 
+    console.log(`[TRADE-ADJ] Adjustment complete: ${executed} executed, ${failed} failed, ${skipped} skipped | final cash=$${userPortfolioRef.current.cash.toFixed(0)}`);
     return { executed, failed, skipped, details };
   }, [agentAdjustments, addEvent, recordTrade, userName]);
 
@@ -687,6 +836,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           recordTrade(npc.name, trade, apiResult.reasoning);
           recordDecision(npc.name, npc.model, trade, apiResult.reasoning);
           const actionLabel = trade.action === "LONG" ? "went LONG" : trade.action === "SHORT" ? "went SHORT" : "closed";
+          console.log(`[NPC-TRADE] ${npc.name} (${modelLabel}): ${actionLabel} ${trade.qty}x ${trade.ticker} @ $${trade.price.toFixed(2)} | cash=$${updatedNpc.portfolio.cash.toFixed(0)}`);
           arenaIdRef.current++;
           setArenaMessages((prev) => [...prev, {
             id: arenaIdRef.current, agentName: npc.name, agentModel: modelLabel,
@@ -699,6 +849,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     }
 
     // Fallback to deterministic logic
+    console.log(`[NPC-TRADE] ${npc.name}: API returned no trades, using fallback`);
     const fallbackTrade = generateFallbackNpcTrade(npc, currentStocks, currentNewsImpactsRef.current);
     if (fallbackTrade) {
       const updatedNpc = executeNpcTrade(npc, fallbackTrade, currentStocks);
@@ -710,6 +861,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         recordDecision(npc.name, npc.model, fallbackTrade, "fallback deterministic");
 
         const actionLabel = fallbackTrade.action === "LONG" ? "went LONG" : fallbackTrade.action === "SHORT" ? "went SHORT" : "closed";
+        console.log(`[NPC-TRADE] ${npc.name} (${modelLabel}) FALLBACK: ${actionLabel} ${fallbackTrade.qty}x ${fallbackTrade.ticker} @ $${fallbackTrade.price.toFixed(2)} | cash=$${updatedNpc.portfolio.cash.toFixed(0)}`);
         arenaIdRef.current++;
         setArenaMessages((prev) => [...prev, {
           id: arenaIdRef.current, agentName: npc.name, agentModel: modelLabel,
@@ -859,12 +1011,15 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     })();
   }, [applyMidRoundEvent, fetchCompanyNewsFromRegistry]);
 
-  // -- User trade execution --
+  // -- User trade execution (manual) --
   const executeTrade = useCallback(
     (ticker: string, action: "LONG" | "SHORT" | "CLOSE", qty: number): { ok: boolean; reason: string } => {
       const currentStocks = stocksRef.current;
       const stock = currentStocks.find((s) => s.ticker === ticker);
       if (!stock) return { ok: false, reason: "Unknown stock" };
+
+      const cashBefore = userPortfolioRef.current.cash;
+      const posBefore = userPortfolioRef.current.positions[ticker];
 
       if (action === "LONG") {
         const result = executeLong(userPortfolioRef.current, currentStocks, ticker, qty);
@@ -875,6 +1030,8 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           setUserTrades((prev) => [...prev, tradeInfo]);
           recordTrade(userName, tradeInfo);
           addEvent("user_trade", `LONG ${qty}x ${ticker} @ $${stock.price.toFixed(2)}`);
+          const posAfter = result.portfolio.positions[ticker];
+          console.log(`[MANUAL-TRADE] LONG ${qty}x ${ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)} | pos: ${posBefore ? `${posBefore.qty}@${posBefore.avgCost.toFixed(2)}` : "none"} → ${posAfter ? `${posAfter.qty}@${posAfter.avgCost.toFixed(2)}` : "none"}`);
         }
         return { ok: result.ok, reason: result.reason };
       } else if (action === "SHORT") {
@@ -886,6 +1043,8 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           setUserTrades((prev) => [...prev, tradeInfo]);
           recordTrade(userName, tradeInfo);
           addEvent("user_trade", `SHORT ${qty}x ${ticker} @ $${stock.price.toFixed(2)}`);
+          const posAfter = result.portfolio.positions[ticker];
+          console.log(`[MANUAL-TRADE] SHORT ${qty}x ${ticker} @ $${stock.price.toFixed(2)} | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)} | pos: ${posBefore ? `${posBefore.qty}@${posBefore.avgCost.toFixed(2)}` : "none"} → ${posAfter ? `${posAfter.qty}@${posAfter.avgCost.toFixed(2)}` : "none"}`);
         }
         return { ok: result.ok, reason: result.reason };
       } else {
@@ -898,6 +1057,8 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           setUserTrades((prev) => [...prev, tradeInfo]);
           recordTrade(userName, tradeInfo);
           addEvent("user_trade", `Closed ${result.side.toUpperCase()} ${qty}x ${ticker} @ $${stock.price.toFixed(2)}`);
+          const posAfter = result.portfolio.positions[ticker];
+          console.log(`[MANUAL-TRADE] CLOSE ${qty}x ${ticker} @ $${stock.price.toFixed(2)} (was ${result.side}) | cash: $${cashBefore.toFixed(0)} → $${result.portfolio.cash.toFixed(0)} | pos: ${posBefore ? `${posBefore.qty}@${posBefore.avgCost.toFixed(2)}` : "none"} → ${posAfter ? `${posAfter.qty}@${posAfter.avgCost.toFixed(2)}` : "closed"}`);
         }
         return { ok: result.ok, reason: result.reason };
       }
@@ -1029,7 +1190,9 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     const userTradeData = roundTradesRef.current.get(userName) || { trades: [], reasoning: "" };
     agentTrades.push({ name: userName, model: userModelLabel, trades: userTradeData.trades, reasoning: userTradeData.reasoning });
     const userValue = computeTotalValue(userPortfolioRef.current, currentStocks);
-    agentPnls.push({ name: userName, model: userModelLabel, strategy: userStrategy, roundPnl: userValue - roundStartValueRef.current, totalPnl: userValue - STARTING_CASH });
+    const userRoundPnl = userValue - roundStartValueRef.current;
+    const userTotalPnl = userValue - STARTING_CASH;
+    agentPnls.push({ name: userName, model: userModelLabel, strategy: userStrategy, roundPnl: userRoundPnl, totalPnl: userTotalPnl });
 
     // NPCs
     for (const npc of currentNpcs) {
@@ -1037,6 +1200,18 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       agentTrades.push({ name: npc.name, model: getModelLabel(npc.model), trades: npcTradeData.trades, reasoning: npcTradeData.reasoning });
       const npcValue = computeTotalValue(npc.portfolio, currentStocks);
       agentPnls.push({ name: npc.name, model: getModelLabel(npc.model), strategy: npc.strategyLabel, roundPnl: npcValue - STARTING_CASH, totalPnl: npcValue - STARTING_CASH });
+    }
+
+    // PART 6: Console P&L summary at end of each round
+    console.log(`[P&L] === R${roundRef.current} END === User: roundP&L=${userRoundPnl >= 0 ? "+" : ""}$${userRoundPnl.toFixed(0)}, totalP&L=${userTotalPnl >= 0 ? "+" : ""}$${userTotalPnl.toFixed(0)}, value=$${userValue.toFixed(0)}, cash=$${userPortfolioRef.current.cash.toFixed(0)}`);
+    console.log(`[P&L]   Open positions: ${Object.entries(userPortfolioRef.current.positions).map(([t, p]) => {
+      const s = currentStocks.find(st => st.ticker === t);
+      const pnl = s ? (p.side === "long" ? (s.price - p.avgCost) * p.qty : (p.avgCost - s.price) * p.qty) : 0;
+      return `${t} ${p.side.toUpperCase()} ${p.qty}@${p.avgCost.toFixed(2)} (P&L: ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(0)})`;
+    }).join(", ") || "none"}`);
+    for (const npc of currentNpcs) {
+      const npcVal = computeTotalValue(npc.portfolio, currentStocks);
+      console.log(`[P&L]   ${npc.name}: totalP&L=${(npcVal - STARTING_CASH) >= 0 ? "+" : ""}$${(npcVal - STARTING_CASH).toFixed(0)}, value=$${npcVal.toFixed(0)}, trades=${npc.tradeCount}`);
     }
 
     const retroData: RoundRetroData = {
@@ -1200,6 +1375,8 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     for (const npc of npcsRef.current) { tradeIdx[npc.id] = 0; }
     npcTradeIndexRef.current = tradeIdx;
 
+    console.log(`[ROUND] === PRE-ROUND R${round}/${TOTAL_ROUNDS} === countdown=${COUNTDOWN_DURATION}s`);
+
     setCountdown(COUNTDOWN_DURATION);
     const timer = setInterval(() => {
       setCountdown((prev) => {
@@ -1208,6 +1385,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           setTradingTimeLeft(TRADING_DURATION);
           setPhase("trading");
           addEvent("system", `Round ${round} \u2014 Trading is open!`);
+          console.log(`[ROUND] === TRADING OPEN R${round}/${TOTAL_ROUNDS} === duration=${TRADING_DURATION}s`);
           return 0;
         }
         return prev - 1;
@@ -1297,6 +1475,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         clearInterval(endCheck);
         clearInterval(timerInterval);
         clearInterval(tickInterval);
+        console.log(`[ROUND] === TRADING END R${roundRef.current}/${TOTAL_ROUNDS} ===`);
         addEvent("system", `Round ${roundRef.current} complete \u2014 Trading paused.`);
         stampExitPrices(); // stamp exit prices for remaining decisions at round end
         captureRoundRetro();
@@ -1318,13 +1497,18 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
   useEffect(() => {
     if (phase !== "round_end") return;
 
+    console.log(`[ROUND] === ROUND_END R${round}/${TOTAL_ROUNDS} === cooldown=${ROUND_END_DURATION}s`);
+
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
           if (round >= TOTAL_ROUNDS) {
+            console.log(`[ROUND] === MATCH COMPLETE === All ${TOTAL_ROUNDS} rounds finished, entering match_retro`);
             setPhase("match_retro");
           } else {
+            const nextRound = round + 1;
+            console.log(`[ROUND] === ADVANCING R${round} → R${nextRound} ===`);
             setRound((r) => r + 1);
             setPhase("pre_round");
           }
