@@ -807,7 +807,7 @@ function MatchRetroScreen({ retroRounds, standings, onContinue }: {
           ))}
         </div>
 
-        {/* Agent Comparison — ALL 5 rounds */}
+        {/* Agent Comparison — ALL 3 rounds */}
         {activeTab === "comparison" && (
           <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 overflow-hidden">
             <div className="overflow-x-auto">

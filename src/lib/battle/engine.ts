@@ -122,7 +122,7 @@ export interface NpcConfig {
 // ------ Constants ------
 
 export const STARTING_CASH = 100_000;
-export const TOTAL_ROUNDS = 5;
+export const TOTAL_ROUNDS = 3;
 export const TRADING_DURATION = 45; // seconds
 export const COUNTDOWN_DURATION = 10; // seconds
 export const ROUND_END_DURATION = 4; // seconds
@@ -160,9 +160,7 @@ const SECTOR_MODIFIERS: Record<string, Record<string, number>> = {
 
 export function getSeverityForRound(round: number): NewsSeverity {
   if (round <= 1) return pickRandom(["LOW", "MODERATE"] as NewsSeverity[]);
-  if (round === 2) return "MODERATE";
-  if (round === 3) return pickRandom(["MODERATE", "HIGH"] as NewsSeverity[]);
-  if (round === 4) return "HIGH";
+  if (round === 2) return pickRandom(["MODERATE", "HIGH"] as NewsSeverity[]);
   return pickRandom(["HIGH", "EXTREME"] as NewsSeverity[]);
 }
 
@@ -172,7 +170,7 @@ function getImpactFromSeverity(severity: NewsSeverity): number {
 }
 
 // Company news scale factor per round (escalation)
-const COMPANY_ROUND_SCALE = [0.6, 0.8, 1.0, 1.25, 1.5];
+const COMPANY_ROUND_SCALE = [0.8, 1.0, 1.5];
 
 // ------ Helpers ------
 

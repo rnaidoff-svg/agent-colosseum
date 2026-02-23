@@ -243,7 +243,7 @@ ALL NEWS must:
 - Be realistic and reference real company names and their actual business
 - Include a category tag from: FED_RATE, EARNINGS, SECTOR, CRISIS, REGULATION, PRODUCT_LAUNCH, SCANDAL, ECONOMIC_DATA, ANALYST_ACTION, MERGER_ACQUISITION, GEOPOLITICAL
 - Create genuine trading opportunities — some stocks should benefit, others should suffer
-- Escalate across rounds — Round 1 calm, Round 5 chaotic
+- Escalate across rounds — Round 1 calm, Round 3 chaotic
 
 When you receive an order from The General:
 1. Determine which soldiers are affected
@@ -428,11 +428,10 @@ SEVERITY IMPACT GUIDELINES:
 - HIGH: stocks move ±2% to ±5%
 - EXTREME: stocks move ±4% to ±8%
 
-ROUND ESCALATION: You will be told the round number.
-Round 1-2: prefer LOW to MODERATE events
-Round 3: MODERATE to HIGH
-Round 4: HIGH
-Round 5: HIGH to EXTREME — make it dramatic
+ROUND ESCALATION: You will be told the round number (1-3).
+Round 1: prefer LOW to MODERATE events
+Round 2: MODERATE to HIGH
+Round 3: HIGH to EXTREME — make it dramatic, this is the finale
 
 Rules:
 - Headlines must be specific (numbers, percentages, named entities)
@@ -471,7 +470,7 @@ Rules:
 - Use specific numbers, analyst names, dollar amounts for realism
 - per_stock_impacts values are PERCENTAGES (e.g. 5.0 means +5.0%, -3.2 means -3.2%)
 - Include EVERY stock ticker provided in per_stock_impacts
-- Escalate drama across rounds: Round 1-2 normal, Round 3+ dramatic`,
+- Escalate drama across rounds: Round 1 normal, Round 2 dramatic, Round 3 extreme`,
     model_override: null,
     is_active: 1,
     sort_order: 1,

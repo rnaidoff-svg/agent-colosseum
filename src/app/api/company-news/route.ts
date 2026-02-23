@@ -112,14 +112,14 @@ export async function POST(request: NextRequest) {
       : "";
 
     // Round escalation guidance (PART 6)
-    const escalation = roundNumber <= 2
-      ? "Round 1-2: Generate normal company news."
-      : roundNumber === 3
-        ? "Round 3: Generate dramatic company news."
-        : "Round 4-5: Generate very dramatic company news — big moves.";
+    const escalation = roundNumber === 1
+      ? "Round 1: Generate normal company news."
+      : roundNumber === 2
+        ? "Round 2: Generate dramatic company news."
+        : "Round 3: Generate very dramatic company news — big moves, this is the finale.";
 
-    const userMessage = `Generate 1 company-specific news event for Round ${roundNumber} of 5.
-This is ROUND ${roundNumber} of 5. ${escalation}${usedStr}
+    const userMessage = `Generate 1 company-specific news event for Round ${roundNumber} of 3.
+This is ROUND ${roundNumber} of 3. ${escalation}${usedStr}
 
 STOCKS IN THIS MATCH:
 ${stockSummary}

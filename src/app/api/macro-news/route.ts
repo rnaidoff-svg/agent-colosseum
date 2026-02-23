@@ -96,18 +96,16 @@ export async function POST(request: NextRequest) {
       : "";
 
     // Round escalation guidance (PART 6)
-    const escalation = roundNumber <= 2
-      ? "Round 1-2: Generate LOW to MODERATE severity events."
-      : roundNumber === 3
-        ? "Round 3: Generate MODERATE to HIGH severity."
-        : roundNumber === 4
-          ? "Round 4: Generate HIGH severity."
-          : "Round 5: Generate HIGH to EXTREME severity — make it dramatic, this is the finale.";
+    const escalation = roundNumber === 1
+      ? "Round 1: Generate LOW to MODERATE severity events."
+      : roundNumber === 2
+        ? "Round 2: Generate MODERATE to HIGH severity."
+        : "Round 3: Generate HIGH to EXTREME severity — make it dramatic, this is the finale.";
 
     const allTickers = stocks.map((s) => s.ticker).join(", ");
 
-    const userMessage = `Generate 1 macro-economic news headline for Round ${roundNumber} of 5.
-This is ROUND ${roundNumber} of 5. ${escalation}${usedStr}
+    const userMessage = `Generate 1 macro-economic news headline for Round ${roundNumber} of 3.
+This is ROUND ${roundNumber} of 3. ${escalation}${usedStr}
 
 STOCKS IN THIS MATCH:
 ${stockSummary}

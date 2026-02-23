@@ -1283,6 +1283,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       return { ...d, pnlFromTrade, wasCorrect };
     });
 
+    console.log(`[SAVE] Saving match results: ${currentStandings.length} agents, ${enrichedDecisions.length} decisions`);
     fetch("/api/match-results", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1301,7 +1302,10 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         })),
         decisions: enrichedDecisions,
       }),
-    }).catch((err) => console.error("Failed to save match results:", err));
+    }).then(async (res) => {
+      const data = await res.json();
+      console.log(`[SAVE] Match results saved successfully: matchId=${data.matchId}`);
+    }).catch((err) => console.error("[SAVE] Failed to save match results:", err));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 

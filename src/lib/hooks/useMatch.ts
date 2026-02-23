@@ -32,7 +32,7 @@ export function useMatch() {
       if (runningRef.current) return;
       runningRef.current = true;
 
-      const totalRounds = configOverrides?.rounds ?? 10;
+      const totalRounds = configOverrides?.rounds ?? 3;
 
       setState({
         phase: "running",

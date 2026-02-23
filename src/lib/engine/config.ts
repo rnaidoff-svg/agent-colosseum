@@ -3,7 +3,7 @@
 // ============================================================
 
 export interface MatchConfig {
-  /** Number of trading rounds (5-50) */
+  /** Number of trading rounds (3-50) */
   rounds: number;
   /** Starting cash per agent in dollars */
   startingCash: number;
@@ -91,7 +91,7 @@ export const DEFAULT_STOCKS: StockConfig[] = [
 ];
 
 export const DEFAULT_MATCH_CONFIG: MatchConfig = {
-  rounds: 10,
+  rounds: 3,
   startingCash: 100_000,
   maxPositionPct: 0.4,
   newsFrequency: 0.3,
@@ -106,7 +106,7 @@ export function buildMatchConfig(
   const config = { ...DEFAULT_MATCH_CONFIG, ...overrides };
 
   // Clamp rounds to valid range
-  config.rounds = Math.max(5, Math.min(50, config.rounds));
+  config.rounds = Math.max(3, Math.min(50, config.rounds));
   // Clamp position pct
   config.maxPositionPct = Math.max(0.05, Math.min(1, config.maxPositionPct));
   // Clamp news frequency
