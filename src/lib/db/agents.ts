@@ -815,6 +815,32 @@ function migrateScalperToBlitzTrader() {
   db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('scalper_blitz_migrated', 'true')").run();
 }
 
+/**
+ * Assign each trading soldier a unique battle model so NPC opponents
+ * default to different LLMs on the configure screen.
+ * Only runs once.
+ */
+function migrateBattleModels() {
+  const db = getDb();
+  const migrated = db.prepare("SELECT value FROM agent_system_config WHERE key = 'battle_models_v1'").get() as { value: string } | undefined;
+  if (migrated?.value === "true") return;
+
+  const modelMap: Record<string, string> = {
+    momentum_trader: "google/gemini-2.5-flash",
+    contrarian: "openai/gpt-4o-mini",
+    scalper: "deepseek/deepseek-chat",
+    news_sniper: "anthropic/claude-haiku-4.5",
+    yolo_trader: "x-ai/grok-3-mini",
+  };
+
+  for (const [agentId, model] of Object.entries(modelMap)) {
+    db.prepare("UPDATE agents SET model_override = ? WHERE id = ?").run(model, agentId);
+  }
+
+  db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('battle_models_v1', 'true')").run();
+  console.log("[migration] Battle models: each trading soldier gets a unique LLM");
+}
+
 // ============================================================
 // Queries
 // ============================================================
@@ -831,6 +857,7 @@ export function getAllAgents(): AgentRow[] {
   migrateMarketEngine60s();
   migrateNewTradingPersonas();
   migrateScalperToBlitzTrader();
+  migrateBattleModels();
   return db.prepare("SELECT * FROM agents ORDER BY sort_order").all() as AgentRow[];
 }
 

@@ -972,23 +972,29 @@ function MatchRetroScreen({ retroRounds, standings, roundSnapshots, onContinue }
                               const actual = evt.actualImpactPct[ticker];
                               if (actual === undefined) return null;
                               const actualPct = actual * 100;
-                              // Determine intended: check per_stock_impacts first, then sector impacts
-                              const newsEvent = rd.newsEvents[ei];
-                              const perStock = newsEvent?.per_stock_impacts;
-                              const intendedRaw = perStock?.[ticker] ?? evt.intendedImpacts[ticker] ?? null;
+                              // Use intendedImpacts from snapshot (already set to per_stock_impacts or sectorImpacts)
+                              const intendedRaw = evt.intendedImpacts[ticker] ?? null;
+                              // per_stock_impacts are already in % (e.g. 3.5 means +3.5%)
                               const intendedPct = intendedRaw != null ? intendedRaw * (Math.abs(intendedRaw) > 1 ? 1 : 100) : null;
                               const drift = intendedPct != null ? Math.abs(actualPct - intendedPct) : 0;
-                              const warn = drift > 1;
+                              // Color coding: green ✓ within 0.5%, yellow ⚠ 0.5-2%, red ✗ >2%
+                              const colorClass = intendedPct == null ? "bg-neutral-800/50"
+                                : drift <= 0.5 ? "bg-green-500/10 border border-green-500/20"
+                                : drift <= 2 ? "bg-yellow-500/10 border border-yellow-500/20"
+                                : "bg-red-500/10 border border-red-500/20";
+                              const icon = intendedPct == null ? ""
+                                : drift <= 0.5 ? "\u2713"
+                                : drift <= 2 ? "\u26A0"
+                                : "\u2717";
+                              const iconColor = drift <= 0.5 ? "text-green-400" : drift <= 2 ? "text-yellow-400" : "text-red-400";
                               return (
-                                <div key={ticker} className={`text-[10px] font-[family-name:var(--font-geist-mono)] px-2 py-1 rounded ${
-                                  warn ? "bg-yellow-500/10 border border-yellow-500/20" : "bg-neutral-800/50"
-                                }`}>
+                                <div key={ticker} className={`text-[10px] font-[family-name:var(--font-geist-mono)] px-2 py-1 rounded ${colorClass}`}>
                                   <span className="text-neutral-400">{ticker}</span>
                                   {intendedPct != null && (
                                     <span className="text-neutral-500"> I:{intendedPct >= 0 ? "+" : ""}{intendedPct.toFixed(1)}%</span>
                                   )}
                                   <span className={actualPct >= 0 ? "text-green-400" : "text-red-400"}> A:{actualPct >= 0 ? "+" : ""}{actualPct.toFixed(2)}%</span>
-                                  {warn && <span className="text-yellow-400 ml-1">{"\u26A0"}</span>}
+                                  {icon && <span className={`${iconColor} ml-1`}>{icon}</span>}
                                 </div>
                               );
                             })}

@@ -7,7 +7,7 @@ const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
 // Severity → max absolute % per stock
 const SEVERITY_CLAMP: Record<string, number> = {
-  LOW: 2, MODERATE: 4, HIGH: 6, EXTREME: 10,
+  LOW: 2, MODERATE: 4, HIGH: 7, EXTREME: 12,
 };
 
 async function callOpenRouter(
@@ -113,6 +113,13 @@ ${stockSummary}
 
 You MUST include ALL of these tickers in per_stock_impacts: ${allTickers}
 
+REALISM GUIDE — per_stock_impacts values are PERCENTAGES (e.g. 2.5 means +2.5%):
+- LOW severity: ±0.5 to ±2%
+- MODERATE severity: ±1 to ±4%
+- HIGH severity: ±2 to ±7%
+- EXTREME severity: ±3 to ±12%
+Higher-beta stocks should move more. Do NOT return values above ±12 for any stock.
+
 Return ONLY valid JSON — no markdown, no code fences, no explanation.`;
 
     const result = await callOpenRouter(apiKey, model, [
@@ -144,11 +151,19 @@ Return ONLY valid JSON — no markdown, no code fences, no explanation.`;
               }
             }
 
-            // Clamp to severity bounds
+            // Log RAW impacts, then clamp to severity bounds
             const severity = (parsed.severity || "MODERATE").toUpperCase();
             const maxAbs = SEVERITY_CLAMP[severity] || 4;
+            const rawImpacts = { ...perStockImpacts };
             for (const ticker of Object.keys(perStockImpacts)) {
               perStockImpacts[ticker] = Math.max(-maxAbs, Math.min(maxAbs, perStockImpacts[ticker]));
+            }
+            // Log RAW vs CLAMPED for every stock
+            const clamped = Object.keys(rawImpacts).filter(t => rawImpacts[t] !== perStockImpacts![t]);
+            if (clamped.length > 0) {
+              console.log(`[macro-news] CLAMPED (severity=${severity}, max=±${maxAbs}%): ${clamped.map(t => `${t} RAW:${rawImpacts[t].toFixed(1)}→CLAMPED:${perStockImpacts![t].toFixed(1)}`).join(", ")}`);
+            } else {
+              console.log(`[macro-news] No clamping needed (severity=${severity}, max=±${maxAbs}%)`);
             }
           } else {
             // No per_stock_impacts from AI — use fallback

@@ -5,9 +5,9 @@ import { parseAIResponse } from "@/lib/utils/parseAIResponse";
 
 const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
-// Severity → max absolute % per stock
+// Severity → max absolute % per stock (target stock — non-targets get half)
 const SEVERITY_CLAMP: Record<string, number> = {
-  LOW: 6, MODERATE: 8, HIGH: 10, EXTREME: 14,
+  LOW: 3, MODERATE: 5, HIGH: 8, EXTREME: 14,
 };
 
 async function callOpenRouter(
@@ -129,6 +129,13 @@ Pick ONE target stock from the available tickers: ${availableTickers}
 You MUST include ALL of these tickers in per_stock_impacts: ${allTickers}
 The target stock gets the biggest impact. Same-sector stocks get sympathy moves. Others get minimal noise.
 
+REALISM GUIDE — per_stock_impacts values are PERCENTAGES (e.g. 5.0 means +5.0%):
+- Target stock should move 3-5x more than non-targets
+- Non-target same-sector stocks: ±0.5 to ±2% (sympathy)
+- Non-target other-sector stocks: ±0 to ±0.5% (noise)
+- Target stock max: ±14% even for EXTREME events
+Do NOT return absurdly large values like ±30% or ±60%.
+
 Return ONLY valid JSON — no markdown, no code fences, no explanation.`;
 
     const result = await callOpenRouter(apiKey, model, [
@@ -169,11 +176,35 @@ Return ONLY valid JSON — no markdown, no code fences, no explanation.`;
               }
             }
 
-            // Clamp to severity bounds
+            // Log RAW impacts, then clamp to severity bounds
             const severity = (parsed.severity || "MODERATE").toUpperCase();
-            const maxAbs = SEVERITY_CLAMP[severity] || 8;
+            const maxAbsTarget = SEVERITY_CLAMP[severity] || 5;
+            const maxAbsOther = Math.round(maxAbsTarget * 0.5 * 10) / 10; // non-targets get half
+            const rawImpacts = { ...perStockImpacts };
             for (const ticker of Object.keys(perStockImpacts)) {
-              perStockImpacts[ticker] = Math.max(-maxAbs, Math.min(maxAbs, perStockImpacts[ticker]));
+              const limit = ticker === tickerAffected ? maxAbsTarget : maxAbsOther;
+              perStockImpacts[ticker] = Math.max(-limit, Math.min(limit, perStockImpacts[ticker]));
+            }
+            // Log RAW vs CLAMPED for every stock
+            const clamped = Object.keys(rawImpacts).filter(t => rawImpacts[t] !== perStockImpacts![t]);
+            if (clamped.length > 0) {
+              console.log(`[company-news] CLAMPED (severity=${severity}, target=±${maxAbsTarget}%, other=±${maxAbsOther}%): ${clamped.map(t => `${t} RAW:${rawImpacts[t].toFixed(1)}→CLAMPED:${perStockImpacts![t].toFixed(1)}`).join(", ")}`);
+            } else {
+              console.log(`[company-news] No clamping needed (severity=${severity}, target=±${maxAbsTarget}%, other=±${maxAbsOther}%)`);
+            }
+
+            // PART 5: Enforce target stock gets 3x bigger move than average of others
+            const targetAbs = Math.abs(perStockImpacts[tickerAffected] || 0);
+            const otherTickers = Object.keys(perStockImpacts).filter(t => t !== tickerAffected);
+            const avgOtherAbs = otherTickers.length > 0
+              ? otherTickers.reduce((sum, t) => sum + Math.abs(perStockImpacts![t]), 0) / otherTickers.length
+              : 0;
+            if (avgOtherAbs > 0 && targetAbs < avgOtherAbs * 3) {
+              // Boost target to 3x the average of others
+              const sign = (perStockImpacts[tickerAffected] || 0) >= 0 ? 1 : -1;
+              const boosted = Math.min(avgOtherAbs * 3, maxAbsTarget);
+              console.log(`[company-news] BOOSTED target ${tickerAffected}: ${targetAbs.toFixed(1)}% → ${boosted.toFixed(1)}% (3x avg other ${avgOtherAbs.toFixed(1)}%)`);
+              perStockImpacts[tickerAffected] = Math.round(sign * boosted * 100) / 100;
             }
           } else {
             console.log("[company-news] AI response missing per_stock_impacts, using fallback");

@@ -84,9 +84,10 @@ export interface EventSnapshot {
   headline: string;
   category: string;
   timestamp: string;
-  intendedImpacts: Record<string, number>; // what Market Engine returned
-  pricesAfter: Record<string, number>; // price snapshot after event applied
-  actualImpactPct: Record<string, number>; // actual % change from previous snapshot
+  intendedImpacts: Record<string, number>; // per_stock_impacts from AI (or sectorImpacts fallback)
+  pricesBefore: Record<string, number>; // price snapshot BEFORE event applied
+  pricesAfter: Record<string, number>; // price snapshot AFTER event applied
+  actualImpactPct: Record<string, number>; // actual % change (after vs before)
   agentDecisions: { agent: string; model: string; actions: string[]; reasoning: string }[];
 }
 
@@ -272,33 +273,39 @@ export function useBattle(
   }, []);
 
   // -- Snapshot helpers (PART 5) --
-  const captureSnapshotEvent = useCallback((event: NewsEvent) => {
+  const captureSnapshotEvent = useCallback((
+    event: NewsEvent,
+    beforePrices: Record<string, number>,
+    afterPrices: Record<string, number>,
+  ) => {
     const snap = currentSnapshotRef.current;
     if (!snap) return;
 
-    const currentPrices: Record<string, number> = {};
-    for (const s of stocksRef.current) { currentPrices[s.ticker] = s.price; }
-
-    // Compute actual % change from last snapshot prices
-    const lastPrices = lastSnapshotPricesRef.current;
+    // Compute actual % change: after vs before
     const actualImpactPct: Record<string, number> = {};
-    for (const [ticker, price] of Object.entries(currentPrices)) {
-      const prev = lastPrices[ticker];
+    for (const [ticker, price] of Object.entries(afterPrices)) {
+      const prev = beforePrices[ticker];
       if (prev && prev > 0) {
         actualImpactPct[ticker] = (price - prev) / prev;
       }
     }
 
+    // Use per_stock_impacts for intended (preferred), fall back to sectorImpacts
+    const intendedImpacts: Record<string, number> = event.per_stock_impacts
+      ? { ...event.per_stock_impacts }
+      : { ...event.sectorImpacts };
+
     snap.events.push({
       headline: event.headline,
       category: event.category || "unknown",
       timestamp: new Date().toISOString(),
-      intendedImpacts: { ...event.sectorImpacts },
-      pricesAfter: currentPrices,
+      intendedImpacts,
+      pricesBefore: { ...beforePrices },
+      pricesAfter: { ...afterPrices },
       actualImpactPct,
       agentDecisions: [],
     });
-    lastSnapshotPricesRef.current = currentPrices;
+    lastSnapshotPricesRef.current = { ...afterPrices };
   }, []);
 
   const finalizeSnapshot = useCallback(() => {
@@ -928,7 +935,10 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}${compoundNote}`);
     }
 
-    captureSnapshotEvent(event);
+    // Capture snapshot with explicit before/after prices
+    const afterPrices: Record<string, number> = {};
+    for (const s of updatedStocks) { afterPrices[s.ticker] = s.price; }
+    captureSnapshotEvent(event, beforePrices, afterPrices);
 
     // NPC reactive trades
     const npcList = npcsRef.current;
@@ -1345,8 +1355,8 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         currentNewsImpactsRef.current = event.sectorImpacts;
         roundNewsEventsRef.current = [event];
         addEvent("news", event.headline);
-        captureSnapshotEvent(event);
-        // NOTE: No price application here — prices frozen during countdown
+        // NOTE: No price application or snapshot here — prices frozen during countdown
+        // Snapshot captured at trading open after prices are applied
       } else {
         // Fallback to hardcoded macro news with round-based escalation
         console.log("[useBattle] Falling back to hardcoded behavior for Macro News Agent");
@@ -1360,8 +1370,8 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           currentNewsImpactsRef.current = newsResult.event.sectorImpacts;
           roundNewsEventsRef.current = [newsResult.event];
           addEvent("news", newsResult.event.headline);
-          captureSnapshotEvent(newsResult.event);
-          // NOTE: No price application here — prices frozen during countdown
+          // NOTE: No price application or snapshot here — prices frozen during countdown
+          // Snapshot captured at trading open after prices are applied
         } else {
           setRoundNewsEvents([]);
           setCurrentNewsImpacts({});
@@ -1425,6 +1435,11 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         const match = intendedPct != null ? (Math.abs(actualPct - intendedPct) < 0.5 ? "\u2713" : "\u26A0") : "?";
         console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}`);
       }
+
+      // Capture snapshot with correct before/after prices (moved from pre_round)
+      const afterPrices: Record<string, number> = {};
+      for (const s of updatedStocks) { afterPrices[s.ticker] = s.price; }
+      captureSnapshotEvent(macroEvent, beforePrices, afterPrices);
     }
 
     fetchAgentStrategy(false);
