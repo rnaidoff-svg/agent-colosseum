@@ -1,13 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { StrategyCard } from "@/components/configure/StrategyCard";
 import { ModelSelector } from "@/components/ModelSelector";
 import { STRATEGY_TEMPLATES } from "@/lib/constants/strategyTemplates";
-import { NPC_DEFAULTS } from "@/lib/constants/defaultModels";
+
+interface TradingAgent {
+  id: string;
+  name: string;
+  description: string;
+  model: string;
+}
 
 export default function ConfigurePage() {
   const router = useRouter();
@@ -18,9 +24,42 @@ export default function ConfigurePage() {
   const [customPrompt, setCustomPrompt] = useState("");
   const [autoAgent, setAutoAgent] = useState(false);
 
-  // NPC enabled state + model state
-  const [npcEnabled, setNpcEnabled] = useState([true, true, true, true]);
-  const [npcModels, setNpcModels] = useState(NPC_DEFAULTS.map(n => n.defaultModel));
+  // Dynamic agent list from database
+  const [tradingAgents, setTradingAgents] = useState<TradingAgent[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
+
+  // NPC enabled state + model state (dynamic length)
+  const [npcEnabled, setNpcEnabled] = useState<boolean[]>([]);
+  const [npcModels, setNpcModels] = useState<string[]>([]);
+
+  // Fetch trading agents from API
+  useEffect(() => {
+    fetch("/api/agents/trading")
+      .then((res) => res.json())
+      .then((data) => {
+        const agents: TradingAgent[] = data.agents || [];
+        setTradingAgents(agents);
+        // Initialize NPC state: all enabled, using their default models
+        setNpcEnabled(agents.map(() => true));
+        setNpcModels(agents.map((a: TradingAgent) => a.model));
+        setAgentsLoaded(true);
+      })
+      .catch(() => {
+        // Fallback to static templates
+        const fallback = STRATEGY_TEMPLATES.map((t) => ({
+          id: t.id, name: t.name, description: t.description, model: "google/gemini-2.5-flash",
+        }));
+        setTradingAgents(fallback);
+        setNpcEnabled(fallback.map(() => true));
+        setNpcModels(fallback.map(() => "google/gemini-2.5-flash"));
+        setAgentsLoaded(true);
+      });
+  }, []);
+
+  // Strategy options = dynamic agents for strategy picker
+  const strategyOptions = agentsLoaded ? tradingAgents : STRATEGY_TEMPLATES.map((t) => ({
+    id: t.id, name: t.name, description: t.description, model: "google/gemini-2.5-flash",
+  }));
 
   const handleNext = () => {
     const agentName = name.trim() || "My Agent";
@@ -31,10 +70,14 @@ export default function ConfigurePage() {
       template,
     });
 
-    // Only pass enabled NPCs
-    npcEnabled.forEach((enabled, i) => {
-      if (enabled) {
-        params.set(`npc${i + 1}Model`, npcModels[i]);
+    // Only pass enabled NPCs — use their index into the tradingAgents array
+    let npcIndex = 0;
+    tradingAgents.forEach((agent, i) => {
+      if (npcEnabled[i]) {
+        npcIndex++;
+        params.set(`npc${npcIndex}Model`, npcModels[i]);
+        params.set(`npc${npcIndex}Name`, agent.name);
+        params.set(`npc${npcIndex}Id`, agent.id);
       }
     });
 
@@ -50,14 +93,13 @@ export default function ConfigurePage() {
     router.push(`/stocks?${params.toString()}`);
   };
 
-  const allEnabled = npcEnabled.every(Boolean);
-  const noneEnabled = npcEnabled.every(e => !e);
+  const allEnabled = npcEnabled.length > 0 && npcEnabled.every(Boolean);
 
   const toggleAll = () => {
     if (allEnabled) {
-      setNpcEnabled([false, false, false, false]);
+      setNpcEnabled(npcEnabled.map(() => false));
     } else {
-      setNpcEnabled([true, true, true, true]);
+      setNpcEnabled(npcEnabled.map(() => true));
     }
   };
 
@@ -96,13 +138,13 @@ export default function ConfigurePage() {
         <ModelSelector value={model} onChange={setModel} label="Model" variant="battle" />
       </Card>
 
-      {/* Strategy Templates */}
+      {/* Strategy Templates — dynamic from database */}
       <Card className="p-6 mb-6">
         <label className="block text-sm font-medium text-neutral-300 mb-3">
           Agent Strategy
         </label>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {STRATEGY_TEMPLATES.map((t) => (
+          {strategyOptions.map((t) => (
             <StrategyCard
               key={t.id}
               name={t.name}
@@ -140,7 +182,7 @@ export default function ConfigurePage() {
         )}
       </Card>
 
-      {/* Opponents */}
+      {/* Opponents — dynamic from database */}
       <Card className="p-6 mb-6">
         <div className="flex items-center justify-between mb-3">
           <div>
@@ -156,16 +198,16 @@ export default function ConfigurePage() {
             onClick={toggleAll}
             className="text-xs font-medium text-amber-500 hover:text-amber-400 transition-colors"
           >
-            {allEnabled ? "Deselect All" : noneEnabled ? "Select All" : "Select All"}
+            {allEnabled ? "Deselect All" : "Select All"}
           </button>
         </div>
         <div className="space-y-3">
-          {NPC_DEFAULTS.map((npc, i) => (
-            <div key={npc.name} className="flex items-center gap-3">
+          {tradingAgents.map((agent, i) => (
+            <div key={agent.id} className="flex items-center gap-3">
               <label className="flex items-center gap-2 cursor-pointer shrink-0 w-40">
                 <input
                   type="checkbox"
-                  checked={npcEnabled[i]}
+                  checked={npcEnabled[i] ?? false}
                   onChange={() => {
                     const next = [...npcEnabled];
                     next[i] = !next[i];
@@ -174,12 +216,12 @@ export default function ConfigurePage() {
                   className="w-4 h-4 rounded border-neutral-600 bg-neutral-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0 cursor-pointer accent-amber-500"
                 />
                 <span className={`text-sm font-medium ${npcEnabled[i] ? "text-neutral-200" : "text-neutral-600"}`}>
-                  {npc.name}
+                  {agent.name}
                 </span>
               </label>
               <div className={`flex-1 ${npcEnabled[i] ? "" : "opacity-30 pointer-events-none"}`}>
                 <ModelSelector
-                  value={npcModels[i]}
+                  value={npcModels[i] || "google/gemini-2.5-flash"}
                   onChange={(v) => {
                     const next = [...npcModels];
                     next[i] = v;
@@ -191,6 +233,9 @@ export default function ConfigurePage() {
               </div>
             </div>
           ))}
+          {!agentsLoaded && (
+            <div className="text-xs text-neutral-500 animate-pulse">Loading agents...</div>
+          )}
         </div>
       </Card>
 

@@ -558,16 +558,23 @@ function LeaderboardPanel({ standings }: { standings: StandingEntry[] }) {
 // PART 5: Arena Chat + Trade Log — 80/20 split, persistent across rounds
 // ============================================================
 
-const NPC_COLORS: Record<string, string> = {
-  "Momentum Trader": "text-green-400", "Contrarian": "text-red-400", "Sector Rotator": "text-blue-400", "Value Hunter": "text-purple-400",
-};
+// Dynamic NPC color assignment — cycles through palette by agent index
+const NPC_COLOR_PALETTE = [
+  "text-green-400", "text-red-400", "text-blue-400", "text-purple-400",
+  "text-cyan-400", "text-pink-400", "text-orange-400", "text-teal-400",
+];
 
-// Abbreviate agent names for compact trade log
-const AGENT_ABBREV: Record<string, string> = {
-  "Momentum Trader": "MT", "Contrarian": "CT", "Sector Rotator": "SR", "Value Hunter": "VH",
-};
+function getNpcColor(name: string, allNames: string[]): string {
+  const idx = allNames.indexOf(name);
+  return NPC_COLOR_PALETTE[idx >= 0 ? idx % NPC_COLOR_PALETTE.length : 0];
+}
 
-function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessage[]; onSendMessage: (content: string) => void; round: number }) {
+// Abbreviate agent names: first letter of each word
+function getAgentAbbrev(name: string): string {
+  return name.split(/\s+/).map(w => w[0]?.toUpperCase() || "").join("").slice(0, 3);
+}
+
+function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: ArenaChatMessage[]; onSendMessage: (content: string) => void; round: number; npcNames: string[] }) {
   const [input, setInput] = useState("");
   const [tradeLogCollapsed, setTradeLogCollapsed] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -631,7 +638,7 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
               <div key={m.id}>
                 {separator}
                 <div className="text-[14px] leading-relaxed">
-                  <span className={`font-semibold ${m.isUser ? "text-amber-400" : (NPC_COLORS[m.agentName] || "text-cyan-400")}`}>{m.agentName}</span>
+                  <span className={`font-semibold ${m.isUser ? "text-amber-400" : getNpcColor(m.agentName, npcNames)}`}>{m.agentName}</span>
                   <span className="text-neutral-600">: </span>
                   <span className="text-neutral-300">{m.message}</span>
                 </div>
@@ -687,7 +694,7 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
               }
 
               // Compact one-line format: "MT: LONG 100 NVDA @ $196"
-              const abbrev = AGENT_ABBREV[m.agentName] || m.agentName.slice(0, 3).toUpperCase();
+              const abbrev = getAgentAbbrev(m.agentName);
               const isUser = m.systemType === "user_trade";
               return (
                 <div key={m.id}>
@@ -1094,23 +1101,29 @@ function BattleContent() {
   const customPrompt = searchParams.get("prompt") || "";
   const autoAgentParam = searchParams.get("autoAgent") === "1";
 
-  // Build NPC configs from URL — only enabled NPCs are present
-  const DEFAULT_NPC_MODELS = ["google/gemini-2.5-flash", "openai/gpt-4o-mini", "deepseek/deepseek-chat", "x-ai/grok-3-mini"];
+  // Build NPC configs from URL — new format includes name + registryId per NPC
   const npcCountParam = searchParams.get("npcCount");
 
   const [npcConfigs] = useState<NpcConfig[]>(() => {
     const configs: NpcConfig[] = [];
-    for (let i = 0; i < 4; i++) {
-      const model = searchParams.get(`npc${i + 1}Model`);
-      if (model) {
-        configs.push({ index: i, model });
-      }
+    for (let i = 1; i <= 10; i++) {
+      const model = searchParams.get(`npc${i}Model`);
+      if (!model) break;
+      const name = searchParams.get(`npc${i}Name`) || undefined;
+      const registryId = searchParams.get(`npc${i}Id`) || undefined;
+      configs.push({ index: i - 1, model, name, registryId });
     }
-    // If no NPC models in URL and no npcCount param (legacy URLs), use all 4 defaults
+    // Legacy fallback: if no NPCs found and no npcCount (old URLs)
     if (configs.length === 0 && npcCountParam === null) {
-      for (let i = 0; i < 4; i++) {
-        configs.push({ index: i, model: DEFAULT_NPC_MODELS[i] });
-      }
+      const defaults = [
+        { name: "Momentum Trader", id: "momentum_trader", model: "google/gemini-2.5-flash" },
+        { name: "Contrarian", id: "contrarian", model: "openai/gpt-4o-mini" },
+        { name: "Scalper", id: "scalper", model: "deepseek/deepseek-chat" },
+        { name: "News Sniper", id: "news_sniper", model: "x-ai/grok-3-mini" },
+      ];
+      defaults.forEach((d, idx) => {
+        configs.push({ index: idx, model: d.model, name: d.name, registryId: d.id });
+      });
     }
     return configs;
   });
@@ -1250,7 +1263,8 @@ function BattleContent() {
         {/* Right sidebar */}
         <div className="w-72 flex flex-col min-h-0 overflow-hidden bg-neutral-900 border-l border-neutral-800">
           <LeaderboardPanel standings={battle.standings} />
-          <ArenaChatPanel messages={battle.arenaMessages} onSendMessage={battle.sendArenaMessage} round={battle.round} />
+          <ArenaChatPanel messages={battle.arenaMessages} onSendMessage={battle.sendArenaMessage} round={battle.round}
+            npcNames={npcConfigs.map(c => c.name || `NPC ${c.index + 1}`)} />
         </div>
       </div>
 

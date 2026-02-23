@@ -7,6 +7,7 @@ import {
   setSystemConfig,
   createPromptVersion,
   createNewAgent,
+  deactivateAgent,
   getAllAgents,
 } from "@/lib/db/agents";
 import { getEffectiveModel, buildGeneralContext, buildLieutenantContext } from "@/lib/agents/prompt-composer";
@@ -180,6 +181,80 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Step 2A-2: Check if General is proposing to delete an agent
+    console.log(`[DEBUG STEP 2A-2] Checking for DELETE AGENT PROPOSAL...`);
+    const deletePatterns = [
+      /DELETE AGENT PROPOSAL:[\s\S]*?AGENT:\s*(.+?)(?:\n|$)[\s\S]*?REASON:\s*([\s\S]*?)$/i,
+      /REMOVE AGENT:[\s\S]*?(?:NAME|AGENT):\s*(.+?)(?:\n|$)[\s\S]*?REASON:\s*([\s\S]*?)$/i,
+    ];
+    for (const pat of deletePatterns) {
+      const deleteMatch = generalResult.content.match(pat);
+      if (deleteMatch) {
+        const targetName = deleteMatch[1].trim();
+        const reason = deleteMatch[2].trim();
+        // Resolve agent ID
+        const allAgentsForDelete = getAllAgents();
+        const targetAgent = allAgentsForDelete.find(
+          (a) => a.name.toLowerCase() === targetName.toLowerCase() || a.id === targetName.toLowerCase().replace(/\s+/g, "_")
+        );
+        const targetId = targetAgent?.id || targetName.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+        console.log(`[DEBUG STEP 2A-2] Found DELETE proposal: "${targetName}" → ${targetId}, reason: ${reason.slice(0, 100)}`);
+
+        updateOrder(order.id, {
+          proposed_changes: JSON.stringify([{
+            action: "delete_agent",
+            agent_id: targetId,
+            agent_name: targetAgent?.name || targetName,
+            reason,
+          }]),
+          status: "pending",
+        });
+
+        const autoApproveEnabled = clientAutoApprove ?? (getSystemConfig("auto_approve") === "true");
+        if (autoApproveEnabled) {
+          const success = deactivateAgent(targetId);
+          if (success) {
+            updateOrder(order.id, { status: "executed", executed_at: new Date().toISOString(), affected_agents: JSON.stringify([targetId]) });
+            return NextResponse.json({
+              orderId: order.id,
+              commanderMessage: message,
+              generalResponse: generalResult.content,
+              delegation: null,
+              lieutenantResponse: null,
+              soldierUpdates: [{
+                agentId: targetId,
+                agentName: targetAgent?.name || targetName,
+                acknowledgment: `Agent "${targetAgent?.name || targetName}" has been deactivated.`,
+                whatChanged: `Deleted (deactivated): ${reason}`,
+                oldPrompt: targetAgent?.system_prompt || "",
+                newPrompt: "",
+              }],
+              status: "executed",
+              agentDeleted: { id: targetId, name: targetAgent?.name || targetName },
+            });
+          }
+        }
+
+        return NextResponse.json({
+          orderId: order.id,
+          commanderMessage: message,
+          generalResponse: generalResult.content,
+          delegation: null,
+          lieutenantResponse: null,
+          soldierUpdates: [{
+            agentId: targetId,
+            agentName: targetAgent?.name || targetName,
+            acknowledgment: `The General proposes deleting "${targetAgent?.name || targetName}".`,
+            whatChanged: `Delete proposal — ${reason}`,
+            oldPrompt: targetAgent?.system_prompt || "",
+            newPrompt: "",
+          }],
+          status: "pending",
+          agentDeleteProposal: { id: targetId, name: targetAgent?.name || targetName, reason },
+        });
+      }
+    }
+
     // Step 2B: Parse delegation from General's response
     console.log(`[DEBUG STEP 2] Parsing delegation from General's response...`);
     const delegationMatch = generalResult.content.match(/DELEGATION:\s*(.+?)(?:\n|$)/i);
@@ -331,12 +406,16 @@ export async function POST(request: NextRequest) {
           const name = nameMatch[1].trim();
           const idMap: Record<string, string> = {
             "momentum trader": "momentum_trader", "contrarian": "contrarian",
-            "sector rotator": "sector_rotator", "value hunter": "value_hunter",
-            "risk averse": "risk_averse", "custom wrapper": "custom_wrapper",
+            "scalper": "scalper", "news sniper": "news_sniper",
+            "yolo trader": "yolo_trader", "yolo": "yolo_trader",
+            "custom wrapper": "custom_wrapper",
             "custom strategy wrapper": "custom_wrapper",
             "macro news": "macro_news", "macro news agent": "macro_news",
             "company news": "company_news", "company news agent": "company_news",
             "stock selector": "stock_selector", "market engine": "market_engine",
+            // Legacy names
+            "sector rotator": "momentum_trader", "value hunter": "contrarian",
+            "risk averse": "scalper",
           };
           const agentId = idMap[name.toLowerCase()] || name.toLowerCase().replace(/\s+/g, "_");
           proposedChanges.push({

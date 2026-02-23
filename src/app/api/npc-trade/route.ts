@@ -8,10 +8,15 @@ const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 // Map NPC strategy names to registry agent IDs
 const STRATEGY_TO_AGENT_ID: Record<string, string> = {
   momentum: "momentum_trader",
+  momentum_trader: "momentum_trader",
   contrarian: "contrarian",
-  sector_rotation: "sector_rotator",
-  value: "value_hunter",
-  risk_averse: "risk_averse",
+  scalper: "scalper",
+  news_sniper: "news_sniper",
+  yolo_trader: "yolo_trader",
+  // Legacy aliases for old URLs
+  sector_rotation: "momentum_trader",
+  value: "contrarian",
+  risk_averse: "scalper",
 };
 
 interface NpcTradeRequestBody {

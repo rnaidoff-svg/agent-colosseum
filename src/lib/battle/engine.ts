@@ -42,7 +42,7 @@ export interface NpcAgent {
   name: string;
   model: string;
   strategyLabel: string;
-  strategy: "momentum" | "contrarian" | "sector_rotation" | "value";
+  strategy: string;
   registryId: string; // agent ID in the registry DB (e.g. 'momentum_trader')
   portfolio: Portfolio;
   tradeCount: number;
@@ -115,8 +115,10 @@ export interface ArenaChatMessage {
 }
 
 export interface NpcConfig {
-  index: number; // 0-3 maps to NPC_DEFS
+  index: number;
   model: string;
+  name?: string;       // from URL params (dynamic)
+  registryId?: string; // from URL params (dynamic)
 }
 
 // ------ Constants ------
@@ -523,69 +525,37 @@ export function closePosition(
 
 // ------ NPC agents ------
 
-const NPC_SYSTEM_PROMPTS: Record<string, string> = {
-  momentum: `You are "Momentum Trader", an aggressive trend-following AI in a competitive stock trading game.
+// Fallback prompts used when registry lookup fails
+const FALLBACK_NPC_PROMPT = `You are a competitive AI trader. Make trading decisions based on news events and market conditions. Provide decisions for every stock. Return clean JSON only.`;
 
-STRATEGY:
-- Chase stocks that are trending upward, ride the momentum
-- When sector news is positive, go LONG the strongest stocks in that sector immediately
-- When a stock is falling hard, go SHORT to ride the downtrend
-- Cut losses quickly, let winners run
-- Be decisive: commit 20-30% of available cash per trade
-- React to news FAST — first-mover advantage wins
-
-PERSONALITY: Confident, aggressive, speed-focused. You believe markets trend and early moves capture the most profit.`,
-
-  contrarian: `You are "Contrarian", a mean-reversion AI trader in a competitive stock trading game.
-
-STRATEGY:
-- Fade the crowd: when everyone buys, you sell; when everyone panics, you buy
-- Go LONG stocks that have dropped significantly — they will revert to the mean
-- Go SHORT stocks that have rallied too far too fast — they are overbought
-- Focus on stocks that have moved 0.5%+ from their starting price
-- Take moderate position sizes (15-25% of cash per trade)
-- Be patient and wait for overextended moves
-
-PERSONALITY: Skeptical, analytical, contrarian. You believe markets overreact and the crowd is usually wrong.`,
-
-  sector_rotation: `You are "Sector Rotator", a systematic sector-allocation AI in a competitive stock trading game.
-
-STRATEGY:
-- Analyze news events for sector-level impacts
-- Go LONG stocks in sectors with positive news catalysts
-- Go SHORT or avoid stocks in sectors facing headwinds
-- Diversify across 2-3 positions when possible
-- Rotate out of sectors when new negative news emerges
-- Size positions at 20-30% of cash, spread across sectors
-- Focus on beta-adjusted expected returns
-
-PERSONALITY: Methodical, data-driven, balanced. You believe sector allocation drives most returns.`,
-
-  value: `You are "Value Hunter", a fundamentals-focused value investor AI in a competitive stock trading game.
-
-STRATEGY:
-- Analyze P/E ratios, EPS, and debt levels to identify undervalued and overvalued stocks
-- Go LONG stocks with low P/E ratios, strong EPS, and manageable debt — they are undervalued
-- Go SHORT stocks with extremely high P/E ratios, negative EPS, or excessive debt — they are overvalued
-- Deploy 50-70% of available cash in your highest conviction value plays
-- Ignore momentum and hype — focus purely on the fundamentals
-- Be patient: value takes time to be recognized but always wins in the end
-
-PERSONALITY: Thoughtful, quotes fundamentals, dismisses hype. You believe markets are inefficient and price eventually reflects true value.`,
-};
-
-const NPC_DEFS: {
-  id: string; name: string; strategy: NpcAgent["strategy"]; strategyLabel: string; maxTrades: number; registryId: string;
-}[] = [
-  { id: "npc-alpha", name: "Momentum Trader", strategy: "momentum", strategyLabel: "Momentum", maxTrades: 3, registryId: "momentum_trader" },
+// Legacy NPC definitions for backwards compatibility with old URL formats (index-based)
+const LEGACY_NPC_DEFS = [
+  { id: "npc-alpha", name: "Momentum Trader", strategy: "momentum_trader", strategyLabel: "Momentum", maxTrades: 3, registryId: "momentum_trader" },
   { id: "npc-beta", name: "Contrarian", strategy: "contrarian", strategyLabel: "Contrarian", maxTrades: 2, registryId: "contrarian" },
-  { id: "npc-gamma", name: "Sector Rotator", strategy: "sector_rotation", strategyLabel: "Sector Rotation", maxTrades: 2, registryId: "sector_rotator" },
-  { id: "npc-delta", name: "Value Hunter", strategy: "value", strategyLabel: "Value", maxTrades: 2, registryId: "value_hunter" },
+  { id: "npc-gamma", name: "Scalper", strategy: "scalper", strategyLabel: "Scalper", maxTrades: 3, registryId: "scalper" },
+  { id: "npc-delta", name: "News Sniper", strategy: "news_sniper", strategyLabel: "News Sniper", maxTrades: 2, registryId: "news_sniper" },
+  { id: "npc-epsilon", name: "YOLO Trader", strategy: "yolo_trader", strategyLabel: "YOLO", maxTrades: 2, registryId: "yolo_trader" },
 ];
 
 export function createNpcAgents(configs: NpcConfig[]): NpcAgent[] {
-  return configs.map((config) => {
-    const def = NPC_DEFS[config.index];
+  return configs.map((config, idx) => {
+    // If config has name/registryId from URL (new dynamic flow), use those
+    if (config.name && config.registryId) {
+      return {
+        id: `npc-${idx}`,
+        name: config.name,
+        model: config.model,
+        strategyLabel: config.name,
+        strategy: config.registryId,
+        registryId: config.registryId,
+        portfolio: createPortfolio(),
+        tradeCount: 0,
+        maxTradesPerRound: 3,
+        systemPrompt: FALLBACK_NPC_PROMPT,
+      };
+    }
+    // Legacy: use index to look up from LEGACY_NPC_DEFS
+    const def = LEGACY_NPC_DEFS[config.index] || LEGACY_NPC_DEFS[0];
     return {
       id: def.id,
       name: def.name,
@@ -596,7 +566,7 @@ export function createNpcAgents(configs: NpcConfig[]): NpcAgent[] {
       portfolio: createPortfolio(),
       tradeCount: 0,
       maxTradesPerRound: def.maxTrades,
-      systemPrompt: NPC_SYSTEM_PROMPTS[def.strategy],
+      systemPrompt: FALLBACK_NPC_PROMPT,
     };
   });
 }
@@ -609,7 +579,7 @@ export function generateFallbackNpcTrade(
 ): TradeInfo | null {
   const { strategy, portfolio } = npc;
 
-  if (strategy === "momentum") {
+  if (strategy === "momentum" || strategy === "momentum_trader") {
     let bestUp: BattleStock | null = null;
     let bestUpPct = 0;
     let bestDown: BattleStock | null = null;
@@ -686,7 +656,7 @@ export function generateFallbackNpcTrade(
     return null;
   }
 
-  if (strategy === "value") {
+  if (strategy === "value" || strategy === "value_hunter") {
     // Value strategy: buy low P/E, short high P/E
     let bestValue: BattleStock | null = null;
     let bestValueScore = -Infinity;
@@ -714,7 +684,7 @@ export function generateFallbackNpcTrade(
     return null;
   }
 
-  // sector_rotation
+  // Default fallback: sector-based logic (used for scalper, news_sniper, yolo_trader, sector_rotation, etc.)
   const sectorImpacts: { sector: string; impact: number }[] = [];
   for (const s of stocks) {
     const impact = newsImpacts[s.sector] || 0;

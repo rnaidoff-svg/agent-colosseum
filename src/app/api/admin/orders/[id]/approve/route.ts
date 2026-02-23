@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOrder, getAgent, updateOrder, createPromptVersion, createNewAgent } from "@/lib/db/agents";
+import { getOrder, getAgent, updateOrder, createPromptVersion, createNewAgent, deactivateAgent } from "@/lib/db/agents";
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -44,6 +44,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           );
         } catch (err) {
           console.error(`Failed to create agent ${change.agent_id}:`, err);
+          continue;
+        }
+      } else if (change.action === "delete_agent") {
+        // Deactivate (soft-delete) an agent
+        const success = deactivateAgent(change.agent_id);
+        if (!success) {
+          console.error(`Failed to deactivate agent ${change.agent_id}`);
           continue;
         }
       } else {
