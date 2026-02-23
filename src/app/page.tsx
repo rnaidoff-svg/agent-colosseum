@@ -20,13 +20,6 @@ interface ModelRankRow {
   avg_pnl_pct: number;
 }
 
-interface StrategyRow {
-  strategy: string;
-  total_matches: number;
-  win_rate: number;
-  avg_pnl_pct: number;
-}
-
 interface UserModelStat {
   model: string;
   matches: number;
@@ -38,23 +31,20 @@ export default function Home() {
   const [topModels, setTopModels] = useState<ModelRankRow[]>([]);
   const [bottomModels, setBottomModels] = useState<ModelRankRow[]>([]);
   const [userModelStats, setUserModelStats] = useState<UserModelStat[]>([]);
-  const [topStrategy, setTopStrategy] = useState<StrategyRow | null>(null);
   const [decisionAccuracy, setDecisionAccuracy] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     async function load() {
       try {
-        const [profileRes, modelsRes, decisionsRes, strategiesRes] = await Promise.all([
+        const [profileRes, modelsRes, decisionsRes] = await Promise.all([
           fetch("/api/match-results?view=profile"),
           fetch("/api/match-results?view=models"),
           fetch("/api/match-results?view=decisions&limit=1"),
-          fetch("/api/match-results?view=strategies"),
         ]);
         const profileData = await profileRes.json();
         const modelsData = await modelsRes.json();
         const decisionsData = await decisionsRes.json();
-        const strategiesData = await strategiesRes.json();
 
         setStats(profileData.stats || null);
         setTopModels(modelsData.topModels || []);
@@ -62,9 +52,6 @@ export default function Home() {
         setUserModelStats(modelsData.userModelStats || []);
         if (decisionsData.accuracy?.accuracy_pct != null) {
           setDecisionAccuracy(decisionsData.accuracy.accuracy_pct);
-        }
-        if (strategiesData.strategies && strategiesData.strategies.length > 0) {
-          setTopStrategy(strategiesData.strategies[0]);
         }
       } catch {
         // API not available
@@ -101,9 +88,19 @@ export default function Home() {
           Configure your trader, pick a strategy, and watch the battle unfold.
         </p>
 
+        {/* Hero stat */}
+        {loaded && topModel && topModel.total_matches >= 2 && (
+          <p className="mt-6 text-sm text-neutral-500">
+            #1 AI TRADER: <span className="text-amber-400 font-semibold">{getModelLabel(topModel.model)}</span> &mdash; <span className="text-green-400 font-semibold">{topModel.win_rate}%</span> win rate across {topModel.total_matches} matches
+          </p>
+        )}
+        {loaded && (!topModel || topModel.total_matches < 2) && (
+          <p className="mt-6 text-sm text-neutral-500">Which AI makes the best trader? Play matches to find out.</p>
+        )}
+
         <Link
           href="/configure"
-          className="mt-10 inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 px-8 py-3.5 text-base font-semibold text-black shadow-lg shadow-amber-500/20 hover:from-amber-400 hover:to-amber-500 transition-all duration-150"
+          className="mt-8 inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 px-8 py-3.5 text-base font-semibold text-black shadow-lg shadow-amber-500/20 hover:from-amber-400 hover:to-amber-500 transition-all duration-150"
         >
           Enter the Pit
           <span aria-hidden="true">&rarr;</span>
@@ -111,56 +108,6 @@ export default function Home() {
       </div>
 
       <div className="relative z-10 mt-14 w-full max-w-5xl px-4 pb-16 space-y-8">
-        {/* Hero: #1 AI Trader + #1 Strategy */}
-        {loaded && (topModel || topStrategy) && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {topModel && (
-              <section className="rounded-2xl border border-amber-500/20 bg-gradient-to-b from-amber-500/5 to-transparent overflow-hidden">
-                <div className="px-6 py-5">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="text-[10px] uppercase tracking-widest text-amber-500/70 font-semibold">#1 Model</div>
-                    <Link href="/leaderboard" className="text-xs text-amber-500 hover:text-amber-400">Rankings &rarr;</Link>
-                  </div>
-                  <div className="text-2xl font-bold text-amber-400">{getModelLabel(topModel.model)}</div>
-                  <div className="flex items-center gap-4 mt-2">
-                    <span className="text-sm text-neutral-400">
-                      <span className="font-semibold text-green-400">{topModel.win_rate}%</span> win rate
-                    </span>
-                    <span className="text-sm text-neutral-400">
-                      <span className={`font-semibold ${topModel.avg_pnl_pct >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {topModel.avg_pnl_pct >= 0 ? "+" : ""}{topModel.avg_pnl_pct}%
-                      </span> avg
-                    </span>
-                    <span className="text-sm text-neutral-500">{topModel.total_matches} matches</span>
-                  </div>
-                </div>
-              </section>
-            )}
-            {topStrategy && (
-              <section className="rounded-2xl border border-green-500/20 bg-gradient-to-b from-green-500/5 to-transparent overflow-hidden">
-                <div className="px-6 py-5">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="text-[10px] uppercase tracking-widest text-green-500/70 font-semibold">#1 Strategy</div>
-                    <Link href="/leaderboard" className="text-xs text-green-500 hover:text-green-400">Strategies &rarr;</Link>
-                  </div>
-                  <div className="text-2xl font-bold text-green-400 capitalize">{topStrategy.strategy.replace(/_/g, " ")}</div>
-                  <div className="flex items-center gap-4 mt-2">
-                    <span className="text-sm text-neutral-400">
-                      <span className="font-semibold text-green-400">{topStrategy.win_rate}%</span> win rate
-                    </span>
-                    <span className="text-sm text-neutral-400">
-                      <span className={`font-semibold ${topStrategy.avg_pnl_pct >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {topStrategy.avg_pnl_pct >= 0 ? "+" : ""}{topStrategy.avg_pnl_pct}%
-                      </span> avg
-                    </span>
-                    <span className="text-sm text-neutral-500">{topStrategy.total_matches} matches</span>
-                  </div>
-                </div>
-              </section>
-            )}
-          </div>
-        )}
-
         {/* Your Stats */}
         {loaded && (
           <section>
@@ -219,13 +166,10 @@ export default function Home() {
                       </span>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-neutral-200 truncate">{getModelLabel(m.model)}</div>
-                        <div className="text-[10px] text-neutral-600">{m.total_matches} matches</div>
                       </div>
-                      <div className="text-right">
-                        <div className="text-sm font-semibold text-green-400">{m.win_rate}%</div>
-                        <div className={`text-[10px] ${m.avg_pnl_pct >= 0 ? "text-green-500/60" : "text-red-500/60"}`}>
-                          {m.avg_pnl_pct >= 0 ? "+" : ""}{m.avg_pnl_pct}% avg
-                        </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-semibold text-green-400">{m.win_rate}%</span>
+                        <span className="text-xs text-neutral-500">{m.total_matches} matches</span>
                       </div>
                     </Link>
                   ))}
@@ -250,13 +194,10 @@ export default function Home() {
                       </span>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-neutral-400 truncate">{getModelLabel(m.model)}</div>
-                        <div className="text-[10px] text-neutral-600">{m.total_matches} matches</div>
                       </div>
-                      <div className="text-right">
-                        <div className="text-sm font-semibold text-red-400">{m.win_rate}%</div>
-                        <div className={`text-[10px] ${m.avg_pnl_pct >= 0 ? "text-green-500/60" : "text-red-500/60"}`}>
-                          {m.avg_pnl_pct >= 0 ? "+" : ""}{m.avg_pnl_pct}% avg
-                        </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-semibold text-red-400">{m.win_rate}%</span>
+                        <span className="text-xs text-neutral-500">{m.total_matches} matches</span>
                       </div>
                     </Link>
                   ))}

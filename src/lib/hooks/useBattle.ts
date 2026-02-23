@@ -73,6 +73,7 @@ export interface DecisionRecord {
   qty: number;
   price: number;
   reasoning: string;
+  exitPrice?: number;
   pnlFromTrade?: number;
   wasCorrect?: number;
 }
@@ -722,8 +723,23 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
   // -- Arena chat ref --
   const fireArenaChatRef = useRef<((headline: string) => void) | null>(null);
 
+  // -- Stamp exit prices on decisions that don't have one yet --
+  const stampExitPrices = useCallback(() => {
+    const currentStocks = stocksRef.current;
+    const priceMap: Record<string, number> = {};
+    for (const s of currentStocks) priceMap[s.ticker] = s.price;
+    for (const d of decisionsRef.current) {
+      if (d.exitPrice === undefined && priceMap[d.ticker] !== undefined) {
+        d.exitPrice = priceMap[d.ticker];
+      }
+    }
+  }, []);
+
   // -- Apply a mid-round news event (shared helper) --
   const applyMidRoundEvent = useCallback((event: NewsEvent) => {
+    // Stamp exit prices for all prior decisions before applying new event prices
+    stampExitPrices();
+
     setRoundNewsEvents((prev) => [...prev, event]);
     roundNewsEventsRef.current = [...roundNewsEventsRef.current, event];
 
@@ -753,7 +769,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
 
     fetchAgentStrategy(true, event.headline);
     setTimeout(() => fireArenaChatRef.current?.(event.headline), 1500);
-  }, [addEvent, captureSnapshotEvent, doNpcTrade, fetchAgentStrategy]);
+  }, [addEvent, captureSnapshotEvent, doNpcTrade, fetchAgentStrategy, stampExitPrices]);
 
   // -- Fetch company news from registry agent --
   const fetchCompanyNewsFromRegistry = useCallback(async (): Promise<{
@@ -1219,6 +1235,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         clearInterval(timerInterval);
         clearInterval(tickInterval);
         addEvent("system", `Round ${roundRef.current} complete \u2014 Trading paused.`);
+        stampExitPrices(); // stamp exit prices for remaining decisions at round end
         captureRoundRetro();
         setPhase("round_end");
         setCountdown(ROUND_END_DURATION);
@@ -1265,20 +1282,21 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     const currentStandings = standingsRef.current;
     if (currentStandings.length === 0) return;
 
-    // Calculate P&L and was_correct for each decision based on final stock prices
+    // Calculate P&L and was_correct for each decision based on exit price (next event) or final price
     const finalStocks = stocksRef.current;
     const enrichedDecisions = decisionsRef.current.map((d) => {
       const stock = finalStocks.find((s) => s.ticker === d.ticker);
       if (!stock) return d;
-      const finalPrice = stock.price;
+      // Use exitPrice (set at next news event or round end), fall back to final price
+      const exitPrice = d.exitPrice ?? stock.price;
       let pnlFromTrade: number | undefined;
       let wasCorrect: number | undefined;
       if (d.actionTaken === "LONG") {
-        pnlFromTrade = Math.round(((finalPrice - d.price) / d.price) * 10000) / 100; // percent
-        wasCorrect = finalPrice > d.price ? 1 : 0;
+        pnlFromTrade = Math.round(((exitPrice - d.price) / d.price) * 10000) / 100; // percent
+        wasCorrect = exitPrice > d.price ? 1 : 0;
       } else if (d.actionTaken === "SHORT") {
-        pnlFromTrade = Math.round(((d.price - finalPrice) / d.price) * 10000) / 100;
-        wasCorrect = finalPrice < d.price ? 1 : 0;
+        pnlFromTrade = Math.round(((d.price - exitPrice) / d.price) * 10000) / 100;
+        wasCorrect = exitPrice < d.price ? 1 : 0;
       }
       return { ...d, pnlFromTrade, wasCorrect };
     });
@@ -1289,6 +1307,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         numRounds: TOTAL_ROUNDS,
+        matchType: currentStandings.length === 1 ? "solo" : currentStandings.length === 2 ? "head_to_head" : "battle",
         stockTickers: finalStocks.map((s) => s.ticker),
         agents: currentStandings.map((s, i) => ({
           name: s.name,

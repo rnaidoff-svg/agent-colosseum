@@ -20,6 +20,7 @@ interface AgentDecisionBody {
 interface MatchResultBody {
   numRounds: number;
   stockTickers: string[];
+  matchType?: string; // 'solo' | 'head_to_head' | 'battle'
   agents: {
     name: string;
     model: string;
@@ -85,6 +86,8 @@ function ensureSchema() {
   try { db.exec(`ALTER TABLE agent_decisions ADD COLUMN news_category TEXT DEFAULT 'unknown'`); } catch { /* column may already exist */ }
   // Migration: add custom_prompt to match_agents if it doesn't exist
   try { db.exec(`ALTER TABLE match_agents ADD COLUMN custom_prompt TEXT DEFAULT NULL`); } catch { /* column may already exist */ }
+  // Migration: add match_type to matches if it doesn't exist
+  try { db.exec(`ALTER TABLE matches ADD COLUMN match_type TEXT DEFAULT 'battle'`); } catch { /* column may already exist */ }
 }
 
 export async function POST(request: NextRequest) {
@@ -92,13 +95,16 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as MatchResultBody;
     const { numRounds, stockTickers, agents } = body;
 
+    // Determine match type from agent count
+    const matchType = body.matchType || (agents.length === 1 ? "solo" : agents.length === 2 ? "head_to_head" : "battle");
+
     ensureSchema();
     const db = getDb();
 
     const insertMatch = db.prepare(
-      "INSERT INTO matches (num_rounds, stocks_json) VALUES (?, ?)"
+      "INSERT INTO matches (num_rounds, stocks_json, match_type) VALUES (?, ?, ?)"
     );
-    const result = insertMatch.run(numRounds, JSON.stringify(stockTickers));
+    const result = insertMatch.run(numRounds, JSON.stringify(stockTickers), matchType);
     const matchId = result.lastInsertRowid;
 
     const insertAgent = db.prepare(
@@ -443,7 +449,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (view === "head2head") {
-      // Head-to-head: model vs model win rates from same matches
+      // Head-to-head: only true 1v1 matches (match_type = 'head_to_head')
       const h2h = db.prepare(`
         SELECT
           a1.model as model_a,
@@ -455,7 +461,7 @@ export async function GET(request: NextRequest) {
         FROM match_agents a1
         JOIN match_agents a2 ON a1.match_id = a2.match_id AND a1.model < a2.model
         JOIN matches m ON m.id = a1.match_id
-        WHERE 1=1 ${timeClause}
+        WHERE m.match_type = 'head_to_head' ${timeClause}
         GROUP BY a1.model, a2.model
         HAVING COUNT(*) >= 1
         ORDER BY matches DESC

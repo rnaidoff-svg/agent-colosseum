@@ -24,6 +24,14 @@ import { formatCurrency, formatPct, getModelLabel } from "@/lib/utils/format";
 import type { NewsEvent } from "@/lib/engine/types";
 
 // ============================================================
+// Smart scroll helper — only auto-scroll if user is near bottom
+// ============================================================
+
+function isNearBottom(el: HTMLElement, threshold = 80): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+}
+
+// ============================================================
 // Sector colors
 // ============================================================
 
@@ -368,9 +376,12 @@ function MyAgentPanel({
   const [chatInput, setChatInput] = useState("");
   const [autoExecFlash, setAutoExecFlash] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const agentNearBottomRef = useRef(true);
 
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (scrollRef.current && agentNearBottomRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
   }, [activityLog.length, chatMessages.length]);
 
   useEffect(() => {
@@ -405,7 +416,8 @@ function MyAgentPanel({
       </div>
 
       {/* Activity log — persistent, scrollable, spans all rounds */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0" style={{ maxHeight: "400px" }}>
+      <div ref={scrollRef} onScroll={() => { if (scrollRef.current) agentNearBottomRef.current = isNearBottom(scrollRef.current); }}
+        className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0" style={{ maxHeight: "400px" }}>
         {loading && activityLog.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-amber-400 py-2">
             <div className="w-3 h-3 border-2 border-amber-500/30 border-t-amber-500 rounded-full animate-spin" />
@@ -544,13 +556,23 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
   const [tradeLogCollapsed, setTradeLogCollapsed] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const tradeScrollRef = useRef<HTMLDivElement>(null);
+  const chatNearBottomRef = useRef(true);
+  const tradeNearBottomRef = useRef(true);
 
   // Split messages: chat = personality + news + system announcements; trades = npc_trade + user_trade
   const chatMessages = messages.filter((m) => !m.isSystem || m.systemType === "news" || m.systemType === "system");
   const tradeMessages = messages.filter((m) => m.isSystem && (m.systemType === "npc_trade" || m.systemType === "user_trade"));
 
-  useEffect(() => { if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight; }, [chatMessages.length]);
-  useEffect(() => { if (tradeScrollRef.current) tradeScrollRef.current.scrollTop = tradeScrollRef.current.scrollHeight; }, [tradeMessages.length]);
+  useEffect(() => {
+    if (chatScrollRef.current && chatNearBottomRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages.length]);
+  useEffect(() => {
+    if (tradeScrollRef.current && tradeNearBottomRef.current) {
+      tradeScrollRef.current.scrollTop = tradeScrollRef.current.scrollHeight;
+    }
+  }, [tradeMessages.length]);
 
   const handleSend = () => { const msg = input.trim(); if (!msg) return; setInput(""); onSendMessage(msg); };
 
@@ -565,7 +587,8 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
         <div className="px-3 py-1.5 border-b border-neutral-800">
           <h2 className="text-[10px] font-semibold uppercase tracking-wider text-cyan-500">Arena Chat</h2>
         </div>
-        <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-3 py-1.5 space-y-0.5 min-h-0">
+        <div ref={chatScrollRef} onScroll={() => { if (chatScrollRef.current) chatNearBottomRef.current = isNearBottom(chatScrollRef.current); }}
+          className="flex-1 overflow-y-auto px-3 py-1.5 space-y-0.5 min-h-0">
           {chatMessages.length === 0 && <span className="text-xs text-neutral-600">Waiting for action...</span>}
           {chatMessages.map((m) => {
             let separator = null;
@@ -630,7 +653,8 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
           <span className="text-neutral-600 text-[10px]">{tradeLogCollapsed ? "\u25BC" : "\u25B2"}</span>
         </button>
         {!tradeLogCollapsed && (
-          <div ref={tradeScrollRef} className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5 min-h-0">
+          <div ref={tradeScrollRef} onScroll={() => { if (tradeScrollRef.current) tradeNearBottomRef.current = isNearBottom(tradeScrollRef.current); }}
+            className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5 min-h-0">
             {tradeMessages.length === 0 && <span className="text-[10px] text-neutral-600">No trades yet...</span>}
             {tradeMessages.map((m) => {
               let separator = null;

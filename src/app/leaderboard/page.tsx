@@ -419,16 +419,16 @@ export default function LeaderboardPage() {
                   <table className="w-full min-w-[800px]">
                     <thead className="border-b border-neutral-800">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase tracking-wider">Agent</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase tracking-wider">Action</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase tracking-wider">News</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase tracking-wider">P&L</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase tracking-wider">Result</th>
+                        <SortHeader label="Agent" field="agent_name" />
+                        <SortHeader label="Action" field="action_taken" />
+                        <SortHeader label="News" field="news_headline" />
+                        <SortHeader label="P&L" field="pnl_from_trade" />
+                        <SortHeader label="Result" field="was_correct" />
                         <th className="px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase tracking-wider">Reasoning</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {decisions.map((d) => (
+                      {sorted(decisions).map((d) => (
                         <tr key={d.id} className="border-b border-neutral-800/50 hover:bg-neutral-800/30">
                           <td className="px-3 py-2.5">
                             <div className="text-sm font-medium text-neutral-200">{d.agent_name}</div>
@@ -494,7 +494,8 @@ export default function LeaderboardPage() {
           {tab === "h2h" && (
             h2hData.length === 0 ? (
               <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-12 text-center">
-                <p className="text-neutral-500">No head-to-head data yet. Play more matches!</p>
+                <p className="text-neutral-500">No head-to-head matches yet.</p>
+                <p className="text-neutral-600 text-sm mt-1">Configure a 1v1 battle (1 opponent) to start comparing models directly.</p>
               </div>
             ) : (
               <div className="space-y-3">
