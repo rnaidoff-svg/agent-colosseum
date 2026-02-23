@@ -232,8 +232,17 @@ export function applyNewsImpacts(
 ): { stocks: BattleStock[]; impacts: Record<string, number> } {
   const impacts: Record<string, number> = {};
 
+  const SPY_MAX_PCT = 3; // SPY never moves more than ±3% per event
+
   const updatedStocks = stocks.map((stock) => {
-    const impactPct = perStockImpacts[stock.ticker] || 0;
+    let impactPct = perStockImpacts[stock.ticker] || 0;
+
+    // Safety clamp: SPY is a broad index ETF — cap at ±3%
+    if (stock.ticker === "SPY" && Math.abs(impactPct) > SPY_MAX_PCT) {
+      console.log(`  [CLAMP] SPY: ${impactPct >= 0 ? "+" : ""}${impactPct.toFixed(1)}% → ±${SPY_MAX_PCT}%`);
+      impactPct = Math.max(-SPY_MAX_PCT, Math.min(SPY_MAX_PCT, impactPct));
+    }
+
     const noise = (Math.random() - 0.5) * 0.003; // ±0.15% realism noise
     const changePct = (impactPct / 100) + noise;
     const newPrice = Math.max(0.01, Math.round(stock.price * (1 + changePct) * 100) / 100);

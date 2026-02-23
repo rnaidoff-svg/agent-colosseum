@@ -978,6 +978,9 @@ export default function CommandCenterPage() {
   // Bulk model change
   const [bulkModelPending, setBulkModelPending] = useState<string | null>(null);
   const [bulkChanging, setBulkChanging] = useState(false);
+  // System Audit
+  const [auditResults, setAuditResults] = useState<{ summary: { total: number; passed: number; failed: number; warned: number }; results: { id: number; name: string; status: "pass" | "fail" | "warn"; detail: string }[]; timestamp: string } | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -1166,6 +1169,18 @@ export default function CommandCenterPage() {
     setBulkModelPending(null);
   };
 
+  const handleRunAudit = async () => {
+    setAuditLoading(true);
+    try {
+      const res = await fetch("/api/test/agent-audit");
+      const data = await res.json();
+      setAuditResults(data);
+    } catch {
+      setAuditResults(null);
+    }
+    setAuditLoading(false);
+  };
+
   // Count active agents
   const activeCount = flattenTreeNodes(tree).length;
 
@@ -1194,6 +1209,55 @@ export default function CommandCenterPage() {
           <div className="max-w-md">
             <ModelSelector value={majorityModel} onChange={handleBulkModelSelect} compact variant="command" />
           </div>
+        </div>
+      </section>
+
+      {/* System Audit */}
+      <section className="max-w-6xl mx-auto mb-6">
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <div className="text-xs font-bold text-neutral-400 uppercase tracking-wider">System Audit</div>
+              <div className="text-[10px] text-neutral-600 mt-0.5">
+                Run 15 tests to verify all agents, prompts, models, and hierarchy are correctly wired.
+              </div>
+            </div>
+            <button onClick={handleRunAudit} disabled={auditLoading}
+              className="px-5 py-2 rounded-lg text-xs font-semibold bg-neutral-800 text-neutral-200 hover:bg-neutral-700 border border-neutral-700 disabled:opacity-40 transition-colors flex items-center gap-2">
+              {auditLoading ? (
+                <><div className="w-3 h-3 border-2 border-neutral-400/30 border-t-neutral-400 rounded-full animate-spin" />Running...</>
+              ) : (
+                <>Run System Audit</>
+              )}
+            </button>
+          </div>
+          {auditResults && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-4 text-xs">
+                <span className="text-green-400 font-bold">{auditResults.summary.passed} passed</span>
+                {auditResults.summary.failed > 0 && <span className="text-red-400 font-bold">{auditResults.summary.failed} failed</span>}
+                {auditResults.summary.warned > 0 && <span className="text-yellow-400 font-bold">{auditResults.summary.warned} warnings</span>}
+                <span className="text-neutral-600 text-[10px]">{new Date(auditResults.timestamp).toLocaleTimeString()}</span>
+              </div>
+              <div className="space-y-1">
+                {auditResults.results.map((r) => (
+                  <div key={r.id} className={`flex items-start gap-2 text-[11px] px-3 py-1.5 rounded-lg ${
+                    r.status === "pass" ? "bg-green-500/5" : r.status === "fail" ? "bg-red-500/5" : "bg-yellow-500/5"
+                  }`}>
+                    <span className={`font-bold shrink-0 mt-0.5 ${
+                      r.status === "pass" ? "text-green-400" : r.status === "fail" ? "text-red-400" : "text-yellow-400"
+                    }`}>
+                      {r.status === "pass" ? "\u2713" : r.status === "fail" ? "\u2717" : "\u26A0"}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-neutral-300 font-medium">{r.name}</span>
+                      <span className="text-neutral-500 ml-2">{r.detail}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </section>
 

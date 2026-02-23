@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getEffectivePrompt, getEffectiveModel } from "@/lib/agents/prompt-composer";
 import { getActivePrompt } from "@/lib/db/agents";
 import { parseAIResponse } from "@/lib/utils/parseAIResponse";
@@ -242,9 +242,14 @@ async function fetchSPY(apiKey: string): Promise<StockResult | null> {
   };
 }
 
-export async function GET() {
-  // Return cached if fresh
-  if (cachedStocks && Date.now() - cachedAt < CACHE_TTL) {
+export async function GET(request: NextRequest) {
+  // Cache bypass: ?fresh=1 or no-cache header
+  const url = new URL(request.url);
+  const wantFresh = url.searchParams.get("fresh") === "1";
+
+  // Return cached if fresh (and no bypass)
+  if (!wantFresh && cachedStocks && Date.now() - cachedAt < CACHE_TTL) {
+    console.log(`[stocks] Returning cached stocks (age: ${Math.round((Date.now() - cachedAt) / 1000)}s)`);
     return NextResponse.json({ stocks: cachedStocks });
   }
 
@@ -282,8 +287,9 @@ export async function GET() {
 
       console.log(`[stocks] Using Stock Selector Agent v${version}, model: ${selectorModel}`);
 
+      const randomSeed = Math.floor(Math.random() * 100000);
       const poolSummary = STOCK_POOL.map((s) => `${s.symbol} (${s.sector}/${s.subSector})`).join(", ");
-      const userMsg = `Available stock pool: ${poolSummary}\n\nPick exactly 5 tickers. Respond with ONLY a JSON array of ticker strings: ["AAPL", "XOM", "JPM", "LLY", "COST"]`;
+      const userMsg = `Available stock pool: ${poolSummary}\n\nRandom seed: ${randomSeed} — use this to vary your picks.\nPick exactly 5 tickers. Respond with ONLY a JSON array of ticker strings: ["AAPL", "XOM", "JPM", "LLY", "COST"]`;
 
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
@@ -296,7 +302,7 @@ export async function GET() {
         body: JSON.stringify({ model: selectorModel, messages: [
           { role: "system", content: selectorPrompt },
           { role: "user", content: userMsg },
-        ], max_tokens: 128, temperature: 0.7 }),
+        ], max_tokens: 128, temperature: 0.9 }),
       });
 
       if (res.ok) {
@@ -319,10 +325,32 @@ export async function GET() {
     console.log("[stocks] Falling back to hardcoded behavior for Stock Selector Agent:", err);
   }
 
-  // Fallback: random selection
+  // Fallback: random selection with sector diversity guarantee
   if (selected.length === 0) {
-    const shuffled = [...STOCK_POOL].sort(() => Math.random() - 0.5);
-    selected = shuffled.slice(0, 5);
+    // Pick one from each sector first, then fill remaining randomly
+    const sectors = Array.from(new Set(STOCK_POOL.map((s) => s.sector)));
+    const bySector: Record<string, CuratedStock[]> = {};
+    for (const s of STOCK_POOL) {
+      if (!bySector[s.sector]) bySector[s.sector] = [];
+      bySector[s.sector].push(s);
+    }
+    const picks: CuratedStock[] = [];
+    const usedSymbols = new Set<string>();
+    // One random stock per sector
+    for (const sec of sectors.sort(() => Math.random() - 0.5)) {
+      const pool = bySector[sec];
+      const pick = pool[Math.floor(Math.random() * pool.length)];
+      picks.push(pick);
+      usedSymbols.add(pick.symbol);
+      if (picks.length >= 5) break;
+    }
+    // Fill remaining from pool
+    const remaining = STOCK_POOL.filter((s) => !usedSymbols.has(s.symbol));
+    while (picks.length < 5 && remaining.length > 0) {
+      const idx = Math.floor(Math.random() * remaining.length);
+      picks.push(remaining.splice(idx, 1)[0]);
+    }
+    selected = picks;
     console.log(`[stocks] Random selection fallback: ${selected.map((s) => s.symbol).join(", ")}`);
   }
 
