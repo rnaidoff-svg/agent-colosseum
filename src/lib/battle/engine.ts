@@ -205,70 +205,93 @@ export function initBattleStocks(profiles: StockProfile[]): BattleStock[] {
 
 /**
  * tickPrices — drift-only random walk between news events.
- * Tiny ±0.1% random noise per tick. No news-driven movement here.
- * All meaningful price changes come from applyNewsToPrice().
+ * Tiny ±0.05% random noise per tick. No news-driven movement here.
+ * All meaningful price changes come from applyNewsImpacts().
  */
 export function tickPrices(stocks: BattleStock[]): BattleStock[] {
   return stocks.map((stock) => {
-    const drift = (Math.random() - 0.5) * 0.002; // ±0.1% max
+    const drift = (Math.random() - 0.5) * 0.001; // ±0.05%
     const newPrice = Math.max(0.01, Math.round(stock.price * (1 + drift) * 100) / 100);
     return { ...stock, prevTickPrice: stock.price, price: newPrice };
   });
 }
 
 /**
- * applyNewsToPrice — deterministic one-shot price application when news fires.
+ * applyNewsImpacts — applies AI-determined per-stock percentage impacts.
+ * This is the ONLY function that modifies prices when news fires.
+ * Instant. Deterministic math. No AI call here.
  *
- * MACRO news:  stock_change = base_impact_pct × SECTOR_MODIFIERS[keyword][sector] × beta + noise
- * COMPANY news: target_stock = primary_impact_pct + noise
- *               same_sector  = primary_impact_pct × 0.3 × beta + noise
- *               other_sector = noise only
- *
- * Returns updated stocks AND a per-ticker impact map (for display badges).
+ * @param stocks - current stock array
+ * @param perStockImpacts - ticker → percentage (e.g. 3.5 means +3.5%, -2.1 means -2.1%)
+ * @param eventLabel - for console logging
+ * @returns updated stocks + actual impact record
+ */
+export function applyNewsImpacts(
+  stocks: BattleStock[],
+  perStockImpacts: Record<string, number>
+): { stocks: BattleStock[]; impacts: Record<string, number> } {
+  const impacts: Record<string, number> = {};
+
+  const updatedStocks = stocks.map((stock) => {
+    const impactPct = perStockImpacts[stock.ticker] || 0;
+    const noise = (Math.random() - 0.5) * 0.003; // ±0.15% realism noise
+    const changePct = (impactPct / 100) + noise;
+    const newPrice = Math.max(0.01, Math.round(stock.price * (1 + changePct) * 100) / 100);
+    const actualPct = (newPrice - stock.price) / stock.price;
+    impacts[stock.ticker] = actualPct;
+
+    console.log(
+      `  ${stock.ticker}: $${stock.price.toFixed(2)} → $${newPrice.toFixed(2)} ` +
+      `(${impactPct >= 0 ? "+" : ""}${impactPct.toFixed(2)}%)`
+    );
+
+    return { ...stock, prevTickPrice: stock.price, price: newPrice };
+  });
+
+  return { stocks: updatedStocks, impacts };
+}
+
+/**
+ * applyNewsToPrice — LEGACY fallback for events without per_stock_impacts.
+ * Uses sector modifiers × beta math from CHUNK 20.
  */
 export function applyNewsToPrice(
   stocks: BattleStock[],
   event: NewsEvent
 ): { stocks: BattleStock[]; impacts: Record<string, number> } {
+  // If event has per_stock_impacts, use the new path
+  if (event.per_stock_impacts && Object.keys(event.per_stock_impacts).length > 0) {
+    const label = event.newsType === "company_specific"
+      ? `COMPANY EVENT: '${event.headline}' (target: ${event.target_ticker})`
+      : `MACRO EVENT: '${event.headline}'`;
+    console.log(`=== ${label} ===`);
+    console.log(`  AI impacts: ${Object.entries(event.per_stock_impacts).map(([t, v]) => `${t} ${v >= 0 ? "+" : ""}${v.toFixed(1)}%`).join(", ")}`);
+    return applyNewsImpacts(stocks, event.per_stock_impacts);
+  }
+
+  // Fallback: old sector-modifier math
   const impacts: Record<string, number> = {};
 
   if (event.newsType === "company_specific" && event.target_ticker) {
-    // ---- Company-specific news ----
     const primaryPct = event.primary_impact_pct || 0;
     const targetSector = stocks.find((s) => s.ticker === event.target_ticker)?.sector;
 
     const updatedStocks = stocks.map((stock) => {
       let movePct: number;
-
       if (stock.ticker === event.target_ticker) {
-        // Target stock: full primary impact
-        const noise = (Math.random() - 0.5) * 0.002;
-        movePct = primaryPct + noise;
+        movePct = primaryPct + (Math.random() - 0.5) * 0.002;
       } else if (targetSector && stock.sector === targetSector) {
-        // Same sector: sympathy move (30% of primary × beta)
-        const noise = (Math.random() - 0.5) * 0.001;
-        movePct = primaryPct * 0.3 * stock.beta + noise;
+        movePct = primaryPct * 0.3 * stock.beta + (Math.random() - 0.5) * 0.001;
       } else {
-        // Different sector: minimal noise only
         movePct = (Math.random() - 0.5) * 0.001;
       }
-
       const newPrice = Math.max(0.01, Math.round(stock.price * (1 + movePct) * 100) / 100);
-      const actualPct = (newPrice - stock.price) / stock.price;
-      impacts[stock.ticker] = actualPct;
-
-      console.log(
-        `[PRICE] ${stock.ticker}: $${stock.price.toFixed(2)} → $${newPrice.toFixed(2)} ` +
-        `(${movePct >= 0 ? "+" : ""}${(movePct * 100).toFixed(3)}%) ` +
-        `[company: ${event.target_ticker}${stock.ticker === event.target_ticker ? " PRIMARY" : stock.sector === targetSector ? " sympathy" : " noise"}]`
-      );
-
+      impacts[stock.ticker] = (newPrice - stock.price) / stock.price;
+      console.log(`[PRICE-FALLBACK] ${stock.ticker}: $${stock.price.toFixed(2)} → $${newPrice.toFixed(2)} (${(movePct * 100).toFixed(3)}%)`);
       return { ...stock, prevTickPrice: stock.price, price: newPrice };
     });
-
     return { stocks: updatedStocks, impacts };
   } else {
-    // ---- Macro news ----
     const keyword = event.sector_keyword || "gdp_growth";
     const modifiers = SECTOR_MODIFIERS[keyword] || {};
     const basePct = event.base_impact_pct || 0.01;
@@ -278,18 +301,10 @@ export function applyNewsToPrice(
       const noise = (Math.random() - 0.5) * 0.002;
       const movePct = basePct * sectorMod * stock.beta + noise;
       const newPrice = Math.max(0.01, Math.round(stock.price * (1 + movePct) * 100) / 100);
-      const actualPct = (newPrice - stock.price) / stock.price;
-      impacts[stock.ticker] = actualPct;
-
-      console.log(
-        `[PRICE] ${stock.ticker}: $${stock.price.toFixed(2)} → $${newPrice.toFixed(2)} ` +
-        `(${movePct >= 0 ? "+" : ""}${(movePct * 100).toFixed(3)}%) ` +
-        `[macro: ${keyword}, sector_mod=${sectorMod.toFixed(2)}, beta=${stock.beta.toFixed(2)}]`
-      );
-
+      impacts[stock.ticker] = (newPrice - stock.price) / stock.price;
+      console.log(`[PRICE-FALLBACK] ${stock.ticker}: $${stock.price.toFixed(2)} → $${newPrice.toFixed(2)} (${(movePct * 100).toFixed(3)}%)`);
       return { ...stock, prevTickPrice: stock.price, price: newPrice };
     });
-
     return { stocks: updatedStocks, impacts };
   }
 }

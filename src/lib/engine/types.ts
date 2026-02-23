@@ -112,6 +112,8 @@ export interface NewsEvent {
   target_ticker?: string;
   /** Direct % impact on target stock for company news (can be +/-) */
   primary_impact_pct?: number;
+  /** AI-determined per-stock impacts: ticker → percentage (e.g. 3.5 = +3.5%) */
+  per_stock_impacts?: Record<string, number>;
 }
 
 export interface MarketState {

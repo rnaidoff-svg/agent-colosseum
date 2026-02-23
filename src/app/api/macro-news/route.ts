@@ -4,6 +4,11 @@ import { getActivePrompt } from "@/lib/db/agents";
 
 const FALLBACK_MODEL = "google/gemini-2.5-flash";
 
+// Severity → max absolute % per stock
+const SEVERITY_CLAMP: Record<string, number> = {
+  LOW: 2, MODERATE: 4, HIGH: 6, EXTREME: 10,
+};
+
 async function callOpenRouter(
   apiKey: string,
   model: string,
@@ -35,11 +40,34 @@ async function callOpenRouter(
   return { content: data.choices?.[0]?.message?.content ?? null };
 }
 
+/** Fallback: derive per-stock impacts from headline sentiment + stock beta */
+function generateFallbackImpacts(
+  headline: string,
+  stocks: { ticker: string; beta: number }[]
+): Record<string, number> {
+  const positiveWords = ["beats", "surges", "growth", "upgrade", "approval", "record", "boost", "stimulus", "cut", "expansion", "wins", "soars"];
+  const negativeWords = ["misses", "crashes", "recession", "downgrade", "reject", "fraud", "tariff", "war", "inflation", "investigation", "recall", "slump"];
+
+  let direction = 0;
+  const lower = headline.toLowerCase();
+  for (const word of positiveWords) if (lower.includes(word)) direction += 1;
+  for (const word of negativeWords) if (lower.includes(word)) direction -= 1;
+
+  const sign = direction >= 0 ? 1 : -1;
+  const impacts: Record<string, number> = {};
+  for (const stock of stocks) {
+    const beta = stock.beta || 1.0;
+    const noise = (Math.random() - 0.5) * 0.5;
+    impacts[stock.ticker] = Math.round((2.0 * sign * beta + noise) * 100) / 100;
+  }
+  return impacts;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { stocks, roundNumber, usedHeadlines } = body as {
-      stocks: { ticker: string; name: string; sector: string; beta: number }[];
+      stocks: { ticker: string; name: string; sector: string; beta: number; peRatio?: number; marketCap?: string; eps?: number; debtEbitda?: number }[];
       roundNumber: number;
       usedHeadlines: string[];
     };
@@ -58,30 +86,40 @@ export async function POST(request: NextRequest) {
 
     console.log(`[macro-news] Using Macro News Agent v${version}, model: ${model}`);
 
+    // Full stock context (PART 7)
     const stockSummary = stocks.map((s) =>
-      `${s.ticker} "${s.name}" (${s.sector}) beta:${s.beta}`
+      `- ${s.ticker} (${s.name}) | Sector: ${s.sector} | Beta: ${s.beta}${s.peRatio ? ` | P/E: ${s.peRatio}` : ""}${s.marketCap ? ` | Mkt Cap: ${s.marketCap}` : ""}${s.eps ? ` | EPS: ${s.eps}` : ""}`
     ).join("\n");
 
     const usedStr = usedHeadlines.length > 0
       ? `\nPrevious headlines (DO NOT repeat): ${usedHeadlines.join(" | ")}`
       : "";
 
-    const userMessage = `Generate 1 macro-economic news headline for Round ${roundNumber} of 5.${usedStr}
+    // Round escalation guidance (PART 6)
+    const escalation = roundNumber <= 2
+      ? "Round 1-2: Generate LOW to MODERATE severity events."
+      : roundNumber === 3
+        ? "Round 3: Generate MODERATE to HIGH severity."
+        : roundNumber === 4
+          ? "Round 4: Generate HIGH severity."
+          : "Round 5: Generate HIGH to EXTREME severity — make it dramatic, this is the finale.";
+
+    const allTickers = stocks.map((s) => s.ticker).join(", ");
+
+    const userMessage = `Generate 1 macro-economic news headline for Round ${roundNumber} of 5.
+This is ROUND ${roundNumber} of 5. ${escalation}${usedStr}
 
 STOCKS IN THIS MATCH:
 ${stockSummary}
 
-Respond with ONLY a JSON object:
-{"headline": "the headline text", "category": "CATEGORY_TAG", "sectorImpacts": {"tech": 0.05, "energy": -0.03, ...}}
+You MUST include ALL of these tickers in per_stock_impacts: ${allTickers}
 
-Categories: FED_RATE, EARNINGS, SECTOR, CRISIS, REGULATION, PRODUCT_LAUNCH, SCANDAL, ECONOMIC_DATA, ANALYST_ACTION, MERGER_ACQUISITION, GEOPOLITICAL
-Sector impact values should be decimals (e.g., 0.05 for +5%, -0.03 for -3%).
-Round ${roundNumber}/5 — ${roundNumber <= 2 ? "mild news" : roundNumber <= 3 ? "moderate news" : "dramatic/chaotic news"}.`;
+Return ONLY valid JSON — no markdown, no code fences, no explanation.`;
 
     const result = await callOpenRouter(apiKey, model, [
       { role: "system", content: effectivePrompt },
       { role: "user", content: userMessage },
-    ], 256, 0.8);
+    ], 512, 0.8);
 
     if (!result.content) {
       console.log("[macro-news] API call failed, falling back to hardcoded");
@@ -92,20 +130,55 @@ Round ${roundNumber}/5 — ${roundNumber <= 2 ? "mild news" : roundNumber <= 3 ?
       const jsonMatch = result.content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.headline && parsed.sectorImpacts) {
-          console.log(`[macro-news] Macro News Agent (from registry) generated: ${parsed.headline}`);
+        if (parsed.headline) {
+          // Extract per_stock_impacts
+          let perStockImpacts: Record<string, number> | null = parsed.per_stock_impacts || null;
+
+          // Validate all tickers present
+          if (perStockImpacts) {
+            const missingTickers = stocks.filter((s) => perStockImpacts![s.ticker] === undefined);
+            if (missingTickers.length > 0) {
+              console.log(`[macro-news] Missing tickers in impacts: ${missingTickers.map((s) => s.ticker).join(", ")}`);
+              // Fill missing with fallback
+              for (const s of missingTickers) {
+                const sign = (parsed.direction === "NEGATIVE" || parsed.direction === "negative") ? -1 : 1;
+                perStockImpacts[s.ticker] = Math.round(sign * s.beta * 1.0 * 100) / 100;
+              }
+            }
+
+            // Clamp to severity bounds
+            const severity = (parsed.severity || "MODERATE").toUpperCase();
+            const maxAbs = SEVERITY_CLAMP[severity] || 4;
+            for (const ticker of Object.keys(perStockImpacts)) {
+              perStockImpacts[ticker] = Math.max(-maxAbs, Math.min(maxAbs, perStockImpacts[ticker]));
+            }
+          } else {
+            // No per_stock_impacts from AI — use fallback
+            console.log("[macro-news] AI response missing per_stock_impacts, using fallback");
+            perStockImpacts = generateFallbackImpacts(parsed.headline, stocks);
+          }
+
+          // Build legacy sectorImpacts for backward compat
+          const sectorImpacts: Record<string, number> = parsed.sectorImpacts || {};
+
+          console.log(`[macro-news] Macro News Agent generated: "${parsed.headline}" | Severity: ${parsed.severity} | Impacts: ${JSON.stringify(perStockImpacts)}`);
+
           return NextResponse.json({
             headline: parsed.headline,
             category: parsed.category || "ECONOMIC_DATA",
-            sectorImpacts: parsed.sectorImpacts,
+            severity: parsed.severity || "MODERATE",
+            direction: parsed.direction || "MIXED",
+            sectorImpacts,
+            per_stock_impacts: perStockImpacts,
+            reasoning: parsed.reasoning || "",
             version,
             model,
             fallback: false,
           });
         }
       }
-    } catch {
-      console.log("[macro-news] Failed to parse response, falling back");
+    } catch (e) {
+      console.log("[macro-news] Failed to parse response:", e);
     }
 
     return NextResponse.json({ headline: null, fallback: true });

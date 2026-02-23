@@ -408,22 +408,37 @@ The user's custom strategy is: {USER_CUSTOM_PROMPT}`,
     type: "market",
     parent_id: "market_lt",
     description: "Creates round-start macro economic headlines that impact all stocks.",
-    system_prompt: `You generate macro-economic news headlines for a stock trading simulation game. Each headline affects ALL sectors.
+    system_prompt: `You generate macro-economic news headlines for a stock trading simulation game.
 
-Your headlines must be realistic, impactful, and reference real-world economic events. Each headline needs sector impact percentages.
+When you generate a macro news event, you must ALSO determine how each stock in the match will be affected. You will receive the list of stocks with their tickers, sectors, betas, and key financials.
 
-Categories: FED_RATE, EARNINGS, SECTOR, CRISIS, REGULATION, PRODUCT_LAUNCH, SCANDAL, ECONOMIC_DATA, ANALYST_ACTION, MERGER_ACQUISITION, GEOPOLITICAL
+Consider for each stock:
+- Its sector and how this macro news specifically impacts that sector
+- Its beta (higher beta = more volatile = bigger move)
+- The company's specific business and how it relates to this news
+- SPY should reflect the overall weighted market direction
+- NOT every stock moves the same amount or direction — think carefully about each one
 
-Examples of good headlines:
-- "Fed cuts rates by 50bps in surprise move" (finance +7%, tech +5%, consumer +4%)
-- "US-China trade deal collapses, new tariffs announced" (tech -8%, consumer -5%)
-- "Oil prices spike 12% on Middle East military escalation" (energy +10%, consumer -5%)
+Return ONLY valid JSON, no other text:
+{"headline": "Your macro news headline", "severity": "LOW|MODERATE|HIGH|EXTREME", "direction": "POSITIVE|NEGATIVE|MIXED", "category": "FED_RATE|EARNINGS|SECTOR|CRISIS|REGULATION|ECONOMIC_DATA|GEOPOLITICAL|SUPPLY_CHAIN", "per_stock_impacts": {"TICKER1": 2.5, "TICKER2": -1.3, "SPY": 1.1}, "reasoning": "One sentence explaining the market logic"}
+
+SEVERITY IMPACT GUIDELINES:
+- LOW: stocks move ±0.3% to ±1.5%
+- MODERATE: stocks move ±1% to ±3%
+- HIGH: stocks move ±2% to ±5%
+- EXTREME: stocks move ±4% to ±8%
+
+ROUND ESCALATION: You will be told the round number.
+Round 1-2: prefer LOW to MODERATE events
+Round 3: MODERATE to HIGH
+Round 4: HIGH
+Round 5: HIGH to EXTREME — make it dramatic
 
 Rules:
 - Headlines must be specific (numbers, percentages, named entities)
-- Include both positive and negative impacts across sectors
+- per_stock_impacts values are PERCENTAGES (e.g. 3.5 means +3.5%, -2.1 means -2.1%)
 - Each headline should create a clear trading opportunity
-- Escalate drama across rounds: Round 1 mild, Round 5 chaotic`,
+- Include EVERY stock ticker provided in per_stock_impacts`,
     model_override: null,
     is_active: 1,
     sort_order: 0,
@@ -437,20 +452,26 @@ Rules:
     description: "Creates mid-round company-specific news events that impact individual stocks.",
     system_prompt: `You generate company-specific news for individual stocks in a stock trading simulation game. These fire mid-round and primarily affect one stock.
 
-Use the stock's actual ticker and sector. Templates include:
-- "{TICKER} wins major $500M government contract" (+8%)
-- "{TICKER} CEO resigns unexpectedly" (-7%)
-- "{TICKER} beats earnings by 40%" (+9%)
-- "Analyst upgrades {TICKER} to strong buy" (+6%)
-- "{TICKER} products recalled over safety concerns" (-8%)
-- "Short seller publishes damaging report on {TICKER}" (-7%)
-- "FDA approves breakthrough treatment from {TICKER}" (+9%)
+When you generate company-specific news, you must ALSO determine how each stock is affected. You will be told which stocks are available to target.
+
+The TARGET company gets the biggest move. Same-sector companies get smaller sympathy moves (usually same direction). Different-sector companies get minimal to zero impact.
+
+Return ONLY valid JSON, no other text:
+{"headline": "Company specific headline mentioning the target company name and ticker", "target_ticker": "TICKER", "severity": "LOW|MODERATE|HIGH|EXTREME", "direction": "POSITIVE|NEGATIVE", "category": "EARNINGS|REGULATION|PRODUCT_LAUNCH|SCANDAL|ANALYST_ACTION|MERGER_ACQUISITION", "per_stock_impacts": {"TARGET_TICKER": 5.0, "SAME_SECTOR": 1.2, "DIFF_SECTOR": 0.1, "SPY": 0.3}, "reasoning": "One sentence explanation"}
+
+SEVERITY IMPACT GUIDELINES (for target stock):
+- LOW: ±3% to ±5%
+- MODERATE: ±4% to ±7%
+- HIGH: ±6% to ±10%
+- EXTREME: ±8% to ±12%
+Same-sector sympathy: ±0.5% to ±2%. Other sectors: ±0% to ±0.3%.
 
 Rules:
 - News must be plausible for the stock's sector
-- Impact should be significant (5-10% move for the primary stock)
-- Cross-sector spillover effects should be small (1-2%)
-- Use specific numbers, analyst names, dollar amounts for realism`,
+- Use specific numbers, analyst names, dollar amounts for realism
+- per_stock_impacts values are PERCENTAGES (e.g. 5.0 means +5.0%, -3.2 means -3.2%)
+- Include EVERY stock ticker provided in per_stock_impacts
+- Escalate drama across rounds: Round 1-2 normal, Round 3+ dramatic`,
     model_override: null,
     is_active: 1,
     sort_order: 1,
@@ -561,6 +582,7 @@ export function getAllAgents(): AgentRow[] {
   seedAgents();
   cleanupDeadAgents();
   ensureAllAgentsHaveModel();
+  migrateNewsAgentPrompts();
   return db.prepare("SELECT * FROM agents ORDER BY sort_order").all() as AgentRow[];
 }
 
@@ -644,6 +666,38 @@ export function ensureAllAgentsHaveModel() {
   const db = getDb();
   const systemModel = getSystemConfig("system_model") || "google/gemini-2.5-flash";
   db.prepare("UPDATE agents SET model_override = ? WHERE model_override IS NULL").run(systemModel);
+}
+
+/**
+ * Migrate news agent prompts to v2 (per_stock_impacts format).
+ * Only runs once — checks a config flag.
+ */
+function migrateNewsAgentPrompts() {
+  const db = getDb();
+  const migrated = db.prepare("SELECT value FROM agent_system_config WHERE key = 'news_v2_migrated'").get() as { value: string } | undefined;
+  if (migrated?.value === "true") return;
+
+  // Find the v2 prompts from the SEED_AGENTS array
+  const macroSeed = SEED_AGENTS.find((a) => a.id === "macro_news");
+  const companySeed = SEED_AGENTS.find((a) => a.id === "company_news");
+
+  if (macroSeed) {
+    const current = db.prepare("SELECT system_prompt FROM agents WHERE id = 'macro_news'").get() as { system_prompt: string } | undefined;
+    if (current && !current.system_prompt.includes("per_stock_impacts")) {
+      createPromptVersion("macro_news", macroSeed.system_prompt, "Auto-migrated to v2: per_stock_impacts format", "system");
+      console.log("[migration] Updated macro_news prompt to v2 (per_stock_impacts)");
+    }
+  }
+
+  if (companySeed) {
+    const current = db.prepare("SELECT system_prompt FROM agents WHERE id = 'company_news'").get() as { system_prompt: string } | undefined;
+    if (current && !current.system_prompt.includes("per_stock_impacts")) {
+      createPromptVersion("company_news", companySeed.system_prompt, "Auto-migrated to v2: per_stock_impacts format", "system");
+      console.log("[migration] Updated company_news prompt to v2 (per_stock_impacts)");
+    }
+  }
+
+  db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('news_v2_migrated', 'true')").run();
 }
 
 export function getSystemConfig(key: string): string | null {

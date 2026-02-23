@@ -756,21 +756,36 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
   }, [addEvent, captureSnapshotEvent, doNpcTrade, fetchAgentStrategy]);
 
   // -- Fetch company news from registry agent --
-  const fetchCompanyNewsFromRegistry = useCallback(async (): Promise<{ headline: string; sectorImpacts: Record<string, number>; tickerAffected: string; category: string } | null> => {
+  const fetchCompanyNewsFromRegistry = useCallback(async (): Promise<{
+    headline: string; sectorImpacts: Record<string, number>; tickerAffected: string; category: string;
+    severity?: string; direction?: string; per_stock_impacts?: Record<string, number>; reasoning?: string;
+  } | null> => {
     try {
       const currentStocks = stocksRef.current;
       const res = await fetch("/api/company-news", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          stocks: currentStocks.map((s) => ({ ticker: s.ticker, name: s.name, sector: s.sector, subSector: s.subSector, beta: s.beta })),
+          stocks: currentStocks.map((s) => ({
+            ticker: s.ticker, name: s.name, sector: s.sector, subSector: s.subSector, beta: s.beta,
+            peRatio: s.peRatio, marketCap: s.marketCap, eps: s.eps, debtEbitda: s.debtEbitda,
+          })),
           roundNumber: roundRef.current,
           usedTickers: usedCompanyTickersRef.current,
         }),
       });
       const data = await res.json();
       if (!data.fallback && data.headline) {
-        return { headline: data.headline, sectorImpacts: data.sectorImpacts, tickerAffected: data.tickerAffected, category: data.category };
+        return {
+          headline: data.headline,
+          sectorImpacts: data.sectorImpacts || {},
+          tickerAffected: data.tickerAffected,
+          category: data.category,
+          severity: data.severity,
+          direction: data.direction,
+          per_stock_impacts: data.per_stock_impacts,
+          reasoning: data.reasoning,
+        };
       }
     } catch (err) {
       console.error("[useBattle] Company news API error:", err);
@@ -792,6 +807,10 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           sectorImpacts: aiResult.sectorImpacts,
           newsType: "company_specific" as const,
           category: aiResult.category as NewsEvent["category"],
+          severity: (aiResult.severity as NewsEvent["severity"]) || undefined,
+          direction: aiResult.direction === "NEGATIVE" ? -1 : aiResult.direction === "POSITIVE" ? 1 : undefined,
+          target_ticker: aiResult.tickerAffected,
+          per_stock_impacts: aiResult.per_stock_impacts,
         };
         applyMidRoundEvent(event);
         return;
@@ -1002,14 +1021,20 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
   const usedHeadlinesRef = useRef<string[]>([]);
 
   // -- Fetch macro news from registry agent --
-  const fetchMacroNewsFromRegistry = useCallback(async (): Promise<{ headline: string; sectorImpacts: Record<string, number>; category: string } | null> => {
+  const fetchMacroNewsFromRegistry = useCallback(async (): Promise<{
+    headline: string; sectorImpacts: Record<string, number>; category: string;
+    severity?: string; direction?: string; per_stock_impacts?: Record<string, number>; reasoning?: string;
+  } | null> => {
     try {
       const currentStocks = stocksRef.current;
       const res = await fetch("/api/macro-news", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          stocks: currentStocks.map((s) => ({ ticker: s.ticker, name: s.name, sector: s.sector, beta: s.beta })),
+          stocks: currentStocks.map((s) => ({
+            ticker: s.ticker, name: s.name, sector: s.sector, beta: s.beta,
+            peRatio: s.peRatio, marketCap: s.marketCap, eps: s.eps, debtEbitda: s.debtEbitda,
+          })),
           roundNumber: roundRef.current,
           usedHeadlines: usedHeadlinesRef.current,
         }),
@@ -1017,7 +1042,15 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       const data = await res.json();
       if (!data.fallback && data.headline) {
         usedHeadlinesRef.current = [...usedHeadlinesRef.current, data.headline];
-        return { headline: data.headline, sectorImpacts: data.sectorImpacts, category: data.category };
+        return {
+          headline: data.headline,
+          sectorImpacts: data.sectorImpacts || {},
+          category: data.category,
+          severity: data.severity,
+          direction: data.direction,
+          per_stock_impacts: data.per_stock_impacts,
+          reasoning: data.reasoning,
+        };
       }
     } catch (err) {
       console.error("[useBattle] Macro news API error:", err);
@@ -1065,6 +1098,9 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           sectorImpacts: aiNews.sectorImpacts,
           newsType: "macro" as const,
           category: aiNews.category as NewsEvent["category"],
+          severity: (aiNews.severity as NewsEvent["severity"]) || undefined,
+          direction: aiNews.direction === "NEGATIVE" ? -1 : aiNews.direction === "POSITIVE" ? 1 : undefined,
+          per_stock_impacts: aiNews.per_stock_impacts,
         };
         setRoundNewsEvents([event]);
         setCurrentNewsImpacts(event.sectorImpacts);

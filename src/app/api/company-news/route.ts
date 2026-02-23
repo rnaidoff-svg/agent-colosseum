@@ -4,6 +4,11 @@ import { getActivePrompt } from "@/lib/db/agents";
 
 const FALLBACK_MODEL = "google/gemini-2.5-flash";
 
+// Severity → max absolute % per stock
+const SEVERITY_CLAMP: Record<string, number> = {
+  LOW: 6, MODERATE: 8, HIGH: 10, EXTREME: 14,
+};
+
 async function callOpenRouter(
   apiKey: string,
   model: string,
@@ -35,11 +40,42 @@ async function callOpenRouter(
   return { content: data.choices?.[0]?.message?.content ?? null };
 }
 
+/** Fallback: derive per-stock impacts from headline sentiment */
+function generateFallbackImpacts(
+  headline: string,
+  targetTicker: string,
+  stocks: { ticker: string; sector: string; beta: number }[]
+): Record<string, number> {
+  const positiveWords = ["beats", "surges", "growth", "upgrade", "approval", "record", "boost", "wins", "soars", "patent", "split", "insider"];
+  const negativeWords = ["misses", "crashes", "recession", "downgrade", "reject", "fraud", "recall", "resign", "short", "warning", "disruption", "slump"];
+
+  let direction = 0;
+  const lower = headline.toLowerCase();
+  for (const word of positiveWords) if (lower.includes(word)) direction += 1;
+  for (const word of negativeWords) if (lower.includes(word)) direction -= 1;
+
+  const sign = direction >= 0 ? 1 : -1;
+  const targetStock = stocks.find((s) => s.ticker === targetTicker);
+  const targetSector = targetStock?.sector;
+
+  const impacts: Record<string, number> = {};
+  for (const stock of stocks) {
+    if (stock.ticker === targetTicker) {
+      impacts[stock.ticker] = Math.round((5.0 * sign + (Math.random() - 0.5) * 2) * 100) / 100;
+    } else if (stock.sector === targetSector) {
+      impacts[stock.ticker] = Math.round((1.0 * sign * stock.beta + (Math.random() - 0.5) * 0.5) * 100) / 100;
+    } else {
+      impacts[stock.ticker] = Math.round(((Math.random() - 0.5) * 0.3) * 100) / 100;
+    }
+  }
+  return impacts;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { stocks, roundNumber, usedTickers } = body as {
-      stocks: { ticker: string; name: string; sector: string; subSector: string; beta: number }[];
+      stocks: { ticker: string; name: string; sector: string; subSector: string; beta: number; peRatio?: number; marketCap?: string; eps?: number; debtEbitda?: number }[];
       roundNumber: number;
       usedTickers: string[];
     };
@@ -63,30 +99,41 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ headline: null, fallback: true });
     }
 
-    const stockSummary = availableStocks.map((s) =>
-      `${s.ticker} "${s.name}" (${s.sector}/${s.subSector}) beta:${s.beta}`
+    // Full stock context (PART 7)
+    const stockSummary = stocks.map((s) =>
+      `- ${s.ticker} (${s.name}) | Sector: ${s.sector}/${s.subSector} | Beta: ${s.beta}${s.peRatio ? ` | P/E: ${s.peRatio}` : ""}${s.marketCap ? ` | Mkt Cap: ${s.marketCap}` : ""}`
     ).join("\n");
 
+    const availableTickers = availableStocks.map((s) => s.ticker).join(", ");
+    const allTickers = stocks.map((s) => s.ticker).join(", ");
+
     const usedStr = usedTickers.length > 0
-      ? `\nStocks already targeted this round (DO NOT use): ${usedTickers.join(", ")}`
+      ? `\nStocks already targeted this round (DO NOT use as target): ${usedTickers.join(", ")}`
       : "";
 
-    const userMessage = `Generate 1 company-specific news event for Round ${roundNumber} of 5.${usedStr}
+    // Round escalation guidance (PART 6)
+    const escalation = roundNumber <= 2
+      ? "Round 1-2: Generate normal company news."
+      : roundNumber === 3
+        ? "Round 3: Generate dramatic company news."
+        : "Round 4-5: Generate very dramatic company news — big moves.";
 
-AVAILABLE STOCKS:
+    const userMessage = `Generate 1 company-specific news event for Round ${roundNumber} of 5.
+This is ROUND ${roundNumber} of 5. ${escalation}${usedStr}
+
+STOCKS IN THIS MATCH:
 ${stockSummary}
 
-Pick ONE stock and generate news about it. Respond with ONLY a JSON object:
-{"headline": "the headline text", "category": "CATEGORY_TAG", "tickerAffected": "TICKER", "sectorImpacts": {"sectorName": 0.08, ...}}
+Pick ONE target stock from the available tickers: ${availableTickers}
+You MUST include ALL of these tickers in per_stock_impacts: ${allTickers}
+The target stock gets the biggest impact. Same-sector stocks get sympathy moves. Others get minimal noise.
 
-The primary stock should have a 5-10% impact. Cross-sector effects should be 1-2%.
-Categories: EARNINGS, REGULATION, PRODUCT_LAUNCH, SCANDAL, ANALYST_ACTION, MERGER_ACQUISITION, CRISIS
-Round ${roundNumber}/5 — ${roundNumber <= 2 ? "normal company news" : "dramatic company news"}.`;
+Return ONLY valid JSON — no markdown, no code fences, no explanation.`;
 
     const result = await callOpenRouter(apiKey, model, [
       { role: "system", content: effectivePrompt },
       { role: "user", content: userMessage },
-    ], 256, 0.8);
+    ], 512, 0.8);
 
     if (!result.content) {
       console.log("[company-news] API call failed, falling back to hardcoded");
@@ -97,25 +144,66 @@ Round ${roundNumber}/5 — ${roundNumber <= 2 ? "normal company news" : "dramati
       const jsonMatch = result.content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.headline && parsed.tickerAffected && parsed.sectorImpacts) {
+        const tickerAffected = parsed.target_ticker || parsed.tickerAffected;
+
+        if (parsed.headline && tickerAffected) {
           // Validate ticker exists
-          const validTicker = stocks.find((s) => s.ticker === parsed.tickerAffected);
-          if (validTicker) {
-            console.log(`[company-news] Company News Agent (from registry) generated: ${parsed.headline}`);
-            return NextResponse.json({
-              headline: parsed.headline,
-              category: parsed.category || "EARNINGS",
-              tickerAffected: parsed.tickerAffected,
-              sectorImpacts: parsed.sectorImpacts,
-              version,
-              model,
-              fallback: false,
-            });
+          const validTicker = stocks.find((s) => s.ticker === tickerAffected);
+          if (!validTicker) {
+            console.log(`[company-news] Invalid ticker: ${tickerAffected}`);
+            return NextResponse.json({ headline: null, fallback: true });
           }
+
+          // Extract per_stock_impacts
+          let perStockImpacts: Record<string, number> | null = parsed.per_stock_impacts || null;
+
+          if (perStockImpacts) {
+            // Fill missing tickers
+            const missingTickers = stocks.filter((s) => perStockImpacts![s.ticker] === undefined);
+            for (const s of missingTickers) {
+              if (s.sector === validTicker.sector) {
+                const sign = (parsed.direction === "NEGATIVE" || parsed.direction === "negative") ? -1 : 1;
+                perStockImpacts[s.ticker] = Math.round(sign * 0.8 * s.beta * 100) / 100;
+              } else {
+                perStockImpacts[s.ticker] = Math.round((Math.random() - 0.5) * 0.2 * 100) / 100;
+              }
+            }
+
+            // Clamp to severity bounds
+            const severity = (parsed.severity || "MODERATE").toUpperCase();
+            const maxAbs = SEVERITY_CLAMP[severity] || 8;
+            for (const ticker of Object.keys(perStockImpacts)) {
+              perStockImpacts[ticker] = Math.max(-maxAbs, Math.min(maxAbs, perStockImpacts[ticker]));
+            }
+          } else {
+            console.log("[company-news] AI response missing per_stock_impacts, using fallback");
+            perStockImpacts = generateFallbackImpacts(parsed.headline, tickerAffected, stocks);
+          }
+
+          // Build legacy sectorImpacts
+          const sectorImpacts: Record<string, number> = parsed.sectorImpacts || {
+            [validTicker.sector]: (perStockImpacts[tickerAffected] || 5) / 100,
+          };
+
+          console.log(`[company-news] Company News Agent generated: "${parsed.headline}" | Target: ${tickerAffected} | Severity: ${parsed.severity} | Impacts: ${JSON.stringify(perStockImpacts)}`);
+
+          return NextResponse.json({
+            headline: parsed.headline,
+            category: parsed.category || "EARNINGS",
+            tickerAffected,
+            severity: parsed.severity || "MODERATE",
+            direction: parsed.direction || "POSITIVE",
+            sectorImpacts,
+            per_stock_impacts: perStockImpacts,
+            reasoning: parsed.reasoning || "",
+            version,
+            model,
+            fallback: false,
+          });
         }
       }
-    } catch {
-      console.log("[company-news] Failed to parse response, falling back");
+    } catch (e) {
+      console.log("[company-news] Failed to parse response:", e);
     }
 
     return NextResponse.json({ headline: null, fallback: true });
