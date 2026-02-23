@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { StockProfile } from "@/lib/engine/stocks";
 import { generateMatchStocks } from "@/lib/engine/stocks";
-import { useBattle, type BattlePhase, type RoundRetroData } from "@/lib/hooks/useBattle";
+import { useBattle, type BattlePhase, type RoundRetroData, type RoundSnapshot } from "@/lib/hooks/useBattle";
 import {
   type BattleStock,
   type Portfolio,
@@ -23,13 +23,7 @@ import { STRATEGY_TEMPLATES } from "@/lib/constants/strategyTemplates";
 import { formatCurrency, formatPct, getModelLabel } from "@/lib/utils/format";
 import type { NewsEvent } from "@/lib/engine/types";
 
-// ============================================================
-// Smart scroll helper — only auto-scroll if user is near bottom
-// ============================================================
-
-function isNearBottom(el: HTMLElement, threshold = 80): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
-}
+// (scroll helpers moved inline — using scrollIntoView pattern)
 
 // ============================================================
 // Sector colors
@@ -375,13 +369,10 @@ function MyAgentPanel({
 }) {
   const [chatInput, setChatInput] = useState("");
   const [autoExecFlash, setAutoExecFlash] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const agentNearBottomRef = useRef(true);
+  const agentEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (scrollRef.current && agentNearBottomRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    agentEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activityLog.length, chatMessages.length]);
 
   useEffect(() => {
@@ -416,8 +407,7 @@ function MyAgentPanel({
       </div>
 
       {/* Activity log — persistent, scrollable, spans all rounds */}
-      <div ref={scrollRef} onScroll={() => { if (scrollRef.current) agentNearBottomRef.current = isNearBottom(scrollRef.current); }}
-        className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0" style={{ maxHeight: "400px" }}>
+      <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0" style={{ maxHeight: "400px" }}>
         {loading && activityLog.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-amber-400 py-2">
             <div className="w-3 h-3 border-2 border-amber-500/30 border-t-amber-500 rounded-full animate-spin" />
@@ -496,6 +486,7 @@ function MyAgentPanel({
             {chatLoading && <div className="text-xs text-neutral-500 animate-pulse">Thinking...</div>}
           </div>
         )}
+        <div ref={agentEndRef} />
       </div>
 
       {/* Chat input — always at bottom */}
@@ -554,24 +545,18 @@ const NPC_COLORS: Record<string, string> = {
 function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessage[]; onSendMessage: (content: string) => void; round: number }) {
   const [input, setInput] = useState("");
   const [tradeLogCollapsed, setTradeLogCollapsed] = useState(false);
-  const chatScrollRef = useRef<HTMLDivElement>(null);
-  const tradeScrollRef = useRef<HTMLDivElement>(null);
-  const chatNearBottomRef = useRef(true);
-  const tradeNearBottomRef = useRef(true);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const tradeEndRef = useRef<HTMLDivElement>(null);
 
   // Split messages: chat = personality + news + system announcements; trades = npc_trade + user_trade
   const chatMessages = messages.filter((m) => !m.isSystem || m.systemType === "news" || m.systemType === "system");
   const tradeMessages = messages.filter((m) => m.isSystem && (m.systemType === "npc_trade" || m.systemType === "user_trade"));
 
   useEffect(() => {
-    if (chatScrollRef.current && chatNearBottomRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-    }
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages.length]);
   useEffect(() => {
-    if (tradeScrollRef.current && tradeNearBottomRef.current) {
-      tradeScrollRef.current.scrollTop = tradeScrollRef.current.scrollHeight;
-    }
+    tradeEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [tradeMessages.length]);
 
   const handleSend = () => { const msg = input.trim(); if (!msg) return; setInput(""); onSendMessage(msg); };
@@ -587,8 +572,7 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
         <div className="px-3 py-1.5 border-b border-neutral-800">
           <h2 className="text-[10px] font-semibold uppercase tracking-wider text-cyan-500">Arena Chat</h2>
         </div>
-        <div ref={chatScrollRef} onScroll={() => { if (chatScrollRef.current) chatNearBottomRef.current = isNearBottom(chatScrollRef.current); }}
-          className="flex-1 overflow-y-auto px-3 py-1.5 space-y-0.5 min-h-0">
+        <div className="flex-1 overflow-y-auto px-3 py-1.5 space-y-0.5 min-h-0">
           {chatMessages.length === 0 && <span className="text-xs text-neutral-600">Waiting for action...</span>}
           {chatMessages.map((m) => {
             let separator = null;
@@ -631,6 +615,7 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
               </div>
             );
           })}
+          <div ref={chatEndRef} />
         </div>
         <div className="px-3 py-1 border-t border-neutral-800/50">
           <div className="flex gap-1.5">
@@ -653,8 +638,7 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
           <span className="text-neutral-600 text-[10px]">{tradeLogCollapsed ? "\u25BC" : "\u25B2"}</span>
         </button>
         {!tradeLogCollapsed && (
-          <div ref={tradeScrollRef} onScroll={() => { if (tradeScrollRef.current) tradeNearBottomRef.current = isNearBottom(tradeScrollRef.current); }}
-            className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5 min-h-0">
+          <div className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5 min-h-0">
             {tradeMessages.length === 0 && <span className="text-[10px] text-neutral-600">No trades yet...</span>}
             {tradeMessages.map((m) => {
               let separator = null;
@@ -696,6 +680,7 @@ function ArenaChatPanel({ messages, onSendMessage }: { messages: ArenaChatMessag
                 </div>
               );
             })}
+            <div ref={tradeEndRef} />
           </div>
         )}
       </div>
@@ -803,8 +788,8 @@ function RoundSummaryOverlay({ round, standings, roundPnl, roundTradeCount }: {
 // PART 6: Match Retro — renamed tabs, trading analysis with results
 // ============================================================
 
-function MatchRetroScreen({ retroRounds, standings, onContinue }: {
-  retroRounds: RoundRetroData[]; standings: StandingEntry[]; onContinue: () => void;
+function MatchRetroScreen({ retroRounds, standings, roundSnapshots, onContinue }: {
+  retroRounds: RoundRetroData[]; standings: StandingEntry[]; roundSnapshots: RoundSnapshot[]; onContinue: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<"comparison" | "analysis">("comparison");
 
@@ -944,6 +929,48 @@ function MatchRetroScreen({ retroRounds, standings, onContinue }: {
                     );
                   })}
                 </div>
+
+                {/* Price Impact Verification */}
+                {(() => {
+                  const snap = roundSnapshots.find(s => s.round === rd.round);
+                  if (!snap || snap.events.length === 0) return null;
+                  return (
+                    <div className="px-5 py-3 border-t border-neutral-800/50">
+                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 mb-2">Price Impact Verification</h4>
+                      {snap.events.map((evt, ei) => (
+                        <div key={ei} className="mb-3 last:mb-0">
+                          <div className="text-xs font-medium text-neutral-400 mb-1">{evt.headline}</div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
+                            {Object.keys(evt.pricesAfter).map((ticker) => {
+                              const actual = evt.actualImpactPct[ticker];
+                              if (actual === undefined) return null;
+                              const actualPct = actual * 100;
+                              // Determine intended: check per_stock_impacts first, then sector impacts
+                              const newsEvent = rd.newsEvents[ei];
+                              const perStock = newsEvent?.per_stock_impacts;
+                              const intendedRaw = perStock?.[ticker] ?? evt.intendedImpacts[ticker] ?? null;
+                              const intendedPct = intendedRaw != null ? intendedRaw * (Math.abs(intendedRaw) > 1 ? 1 : 100) : null;
+                              const drift = intendedPct != null ? Math.abs(actualPct - intendedPct) : 0;
+                              const warn = drift > 1;
+                              return (
+                                <div key={ticker} className={`text-[10px] font-[family-name:var(--font-geist-mono)] px-2 py-1 rounded ${
+                                  warn ? "bg-yellow-500/10 border border-yellow-500/20" : "bg-neutral-800/50"
+                                }`}>
+                                  <span className="text-neutral-400">{ticker}</span>
+                                  {intendedPct != null && (
+                                    <span className="text-neutral-500"> I:{intendedPct >= 0 ? "+" : ""}{intendedPct.toFixed(1)}%</span>
+                                  )}
+                                  <span className={actualPct >= 0 ? "text-green-400" : "text-red-400"}> A:{actualPct >= 0 ? "+" : ""}{actualPct.toFixed(2)}%</span>
+                                  {warn && <span className="text-yellow-400 ml-1">{"\u26A0"}</span>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -1219,7 +1246,7 @@ function BattleContent() {
       )}
 
       {battle.phase === "match_retro" && (
-        <MatchRetroScreen retroRounds={battle.retroRounds} standings={battle.standings} onContinue={battle.dismissRetro} />
+        <MatchRetroScreen retroRounds={battle.retroRounds} standings={battle.standings} roundSnapshots={battle.roundSnapshots} onContinue={battle.dismissRetro} />
       )}
 
       {battle.phase === "results" && (

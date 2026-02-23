@@ -753,10 +753,28 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     addEvent("news", event.headline);
 
     // Apply price impact immediately via deterministic model
+    const beforePrices: Record<string, number> = {};
+    for (const s of stocksRef.current) { beforePrices[s.ticker] = s.price; }
+
     const { stocks: updatedStocks } = applyNewsToPrice(stocksRef.current, event);
     stocksRef.current = updatedStocks;
     setStocks(updatedStocks);
     setIndexValue(computeIndex(updatedStocks));
+
+    // PART 6: Console price verification
+    const eventLabel = event.newsType === "macro" ? "MACRO" : "COMPANY";
+    const targetLabel = event.target_ticker ? ` (target: ${event.target_ticker})` : "";
+    console.log(`=== R${roundRef.current} ${eventLabel}: '${event.headline}'${targetLabel} ===`);
+    for (const s of updatedStocks) {
+      const before = beforePrices[s.ticker] ?? s.startPrice;
+      const actualPct = ((s.price - before) / before) * 100;
+      const perStock = event.per_stock_impacts;
+      const intended = perStock?.[s.ticker];
+      const intendedPct = intended != null ? intended * (Math.abs(intended) > 1 ? 1 : 100) : null;
+      const match = intendedPct != null ? (Math.abs(actualPct - intendedPct) < 0.5 ? "\u2713" : "\u26A0") : "?";
+      const compoundNote = event.newsType === "company_specific" && Math.abs(actualPct) > 0.01 ? " [compounds on prior]" : "";
+      console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}${compoundNote}`);
+    }
 
     captureSnapshotEvent(event);
 
@@ -1031,6 +1049,29 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
 
     setRetroRounds((prev) => [...prev, retroData]);
     roundTradesRef.current = new Map();
+
+    // PART 4: Log round snapshot for QA debugging
+    // The snapshot was finalized above, so check the latest in state
+    setRoundSnapshots((prev) => {
+      const latest = prev[prev.length - 1];
+      if (latest) {
+        console.log(`[SNAPSHOT] Round ${latest.round}: ${latest.events.length} events captured`);
+        for (const evt of latest.events) {
+          console.log(`  Event: "${evt.headline}" (${evt.category})`);
+          for (const [ticker, pct] of Object.entries(evt.actualImpactPct)) {
+            const intendedSector = evt.intendedImpacts;
+            console.log(`    ${ticker}: actual ${(pct * 100).toFixed(2)}% | intended sectors: ${JSON.stringify(intendedSector)}`);
+          }
+        }
+        if (Object.keys(latest.driftPct).length > 0) {
+          const driftEntries = Object.entries(latest.driftPct).filter(([, v]) => Math.abs(v) > 0.001);
+          if (driftEntries.length > 0) {
+            console.log(`  Drift (unexplained): ${driftEntries.map(([t, v]) => `${t}: ${(v * 100).toFixed(2)}%`).join(", ")}`);
+          }
+        }
+      }
+      return prev;
+    });
   }, [userName, userModelLabel, userStrategy, finalizeSnapshot]);
 
   // -- Used headlines ref for AI news deduplication --
@@ -1077,6 +1118,12 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
   // -- Phase: pre_round --
   useEffect(() => {
     if (phase !== "pre_round") return;
+
+    // PART 2+3: Immediately clear stale news & impacts so nothing leaks across rounds
+    setRoundNewsEvents([]);
+    roundNewsEventsRef.current = [];
+    setCurrentNewsImpacts({});
+    currentNewsImpactsRef.current = {};
 
     roundStartValueRef.current = computeTotalValue(userPortfolioRef.current, stocksRef.current);
     roundStartTradeIndexRef.current = userTradesRef.current.length;
@@ -1179,11 +1226,27 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     const macroEvents = roundNewsEventsRef.current;
     if (macroEvents.length > 0) {
       const macroEvent = macroEvents[0];
-      console.log(`[TRADING] Round ${roundRef.current} — Applying macro news: "${macroEvent.headline}"`);
+
+      // PART 6: Capture before prices for logging
+      const beforePrices: Record<string, number> = {};
+      for (const s of stocksRef.current) { beforePrices[s.ticker] = s.price; }
+
       const { stocks: updatedStocks } = applyNewsToPrice(stocksRef.current, macroEvent);
       stocksRef.current = updatedStocks;
       setStocks(updatedStocks);
       setIndexValue(computeIndex(updatedStocks));
+
+      // PART 6: Console price verification for macro at trading open
+      console.log(`=== R${roundRef.current} MACRO (trading open): '${macroEvent.headline}' ===`);
+      for (const s of updatedStocks) {
+        const before = beforePrices[s.ticker] ?? s.startPrice;
+        const actualPct = ((s.price - before) / before) * 100;
+        const perStock = macroEvent.per_stock_impacts;
+        const intended = perStock?.[s.ticker];
+        const intendedPct = intended != null ? intended * (Math.abs(intended) > 1 ? 1 : 100) : null;
+        const match = intendedPct != null ? (Math.abs(actualPct - intendedPct) < 0.5 ? "\u2713" : "\u26A0") : "?";
+        console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}`);
+      }
     }
 
     fetchAgentStrategy(false);
