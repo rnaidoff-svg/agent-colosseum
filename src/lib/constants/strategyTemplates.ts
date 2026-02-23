@@ -22,7 +22,7 @@ export const STRATEGY_TEMPLATES: StrategyTemplate[] = [
   },
   {
     id: "scalper",
-    name: "Scalper",
+    name: "Blitz Trader",
     description: "Quick in-and-out trades on every event. Small profits, tight stops.",
     systemPrompt: "You are a high-frequency scalper. React to every news event with quick trades. Small positions, tight stops.",
   },

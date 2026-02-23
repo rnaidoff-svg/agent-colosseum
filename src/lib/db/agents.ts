@@ -127,7 +127,7 @@ const SEED_AGENTS: Omit<AgentRow, "created_at">[] = [
 You manage a hierarchy of AI agents organized into divisions:
 
 DIVISION 1: TRADING OPERATIONS (Lieutenant: Trading Ops, id: trading_lt)
-Soldiers: Momentum Trader, Contrarian, Scalper, News Sniper, YOLO Trader, Custom Wrapper
+Soldiers: Momentum Trader, Contrarian, Blitz Trader, News Sniper, YOLO Trader, Custom Wrapper
 These agents make trading decisions during battles.
 
 DIVISION 2: MARKET OPERATIONS (Lieutenant: Market Ops, id: market_lt)
@@ -198,7 +198,7 @@ EXPECTED OUTCOME: [what should change as a result]`,
 YOUR SOLDIERS (trading agents you manage):
 1. Momentum Trader (id: momentum_trader) — aggressive, trend-following, chases momentum, confident personality
 2. Contrarian (id: contrarian) — skeptical, bets against consensus, buys dips, shorts hype, smug personality
-3. Scalper (id: scalper) — high-frequency small positions, quick in-and-out, tight stops, hyper personality
+3. Blitz Trader (id: scalper) — high-frequency small positions, quick in-and-out, tight stops, hyper personality
 4. News Sniper (id: news_sniper) — precision news-based, ignores macro, goes big on company news, clinical personality
 5. YOLO Trader (id: yolo_trader) — maximum conviction all-in on one stock, reckless meme personality
 6. Custom Wrapper (id: custom_wrapper) — wraps user-provided custom prompts with system rules
@@ -347,12 +347,12 @@ RESPONSE FORMAT:
   },
   {
     id: "scalper",
-    name: "Scalper",
+    name: "Blitz Trader",
     rank: "soldier",
     type: "trading",
     parent_id: "trading_lt",
     description: "Quick in-and-out trades on every event. Small profits, tight stops, maximum trade frequency.",
-    system_prompt: `You are "Scalper", a high-frequency small-position day trader in a competitive stock trading game.
+    system_prompt: `You are "Blitz Trader", a high-frequency small-position day trader in a competitive stock trading game.
 
 STRATEGY:
 - React to EVERY news event with quick in-and-out trades
@@ -767,7 +767,7 @@ function migrateNewTradingPersonas() {
   const tradingLtSeed = SEED_AGENTS.find((a) => a.id === "trading_lt");
   if (tradingLtSeed) {
     const currentLt = db.prepare("SELECT system_prompt FROM agents WHERE id = 'trading_lt'").get() as { system_prompt: string } | undefined;
-    if (currentLt && !currentLt.system_prompt.includes("Scalper")) {
+    if (currentLt && !currentLt.system_prompt.includes("Blitz Trader")) {
       createPromptVersion("trading_lt", tradingLtSeed.system_prompt, "Migrated: new soldier list (scalper, news_sniper, yolo_trader)", "system");
       console.log("[migration] Updated Trading LT prompt with new soldier list");
     }
@@ -775,6 +775,44 @@ function migrateNewTradingPersonas() {
 
   db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('trading_personas_v2', 'true')").run();
   console.log("[migration] Trading personas v2 migration complete");
+}
+
+/**
+ * One-time fix: If the General already renamed Scalper → Blitz Trader via command chain
+ * but the name wasn't saved (because the old code only saved prompts), apply the rename now.
+ * Checks if the scalper agent's prompt contains "Blitz Trader" but its name is still "Scalper".
+ */
+function migrateScalperToBlitzTrader() {
+  const db = getDb();
+  const migrated = db.prepare("SELECT value FROM agent_system_config WHERE key = 'scalper_blitz_migrated'").get() as { value: string } | undefined;
+  if (migrated?.value === "true") return;
+
+  const scalper = db.prepare("SELECT name, system_prompt FROM agents WHERE id = 'scalper'").get() as { name: string; system_prompt: string } | undefined;
+  if (scalper && scalper.name !== "Blitz Trader") {
+    // Rename to Blitz Trader and update prompt if needed
+    db.prepare("UPDATE agents SET name = 'Blitz Trader' WHERE id = 'scalper'").run();
+    if (!scalper.system_prompt.includes("Blitz Trader")) {
+      const newPrompt = scalper.system_prompt.replace(/You are "Scalper"/, 'You are "Blitz Trader"');
+      if (newPrompt !== scalper.system_prompt) {
+        createPromptVersion("scalper", newPrompt, "Renamed Scalper → Blitz Trader", "system");
+      }
+    }
+    console.log("[migration] Renamed Scalper → Blitz Trader");
+  }
+
+  // Also update General and Trading LT prompts if they still reference "Scalper"
+  const general = db.prepare("SELECT system_prompt FROM agents WHERE id = 'general'").get() as { system_prompt: string } | undefined;
+  if (general && general.system_prompt.includes("Scalper") && !general.system_prompt.includes("Blitz Trader")) {
+    const updated = general.system_prompt.replace(/Scalper/g, "Blitz Trader");
+    createPromptVersion("general", updated, "Updated: Scalper → Blitz Trader in soldier list", "system");
+  }
+  const tradingLt = db.prepare("SELECT system_prompt FROM agents WHERE id = 'trading_lt'").get() as { system_prompt: string } | undefined;
+  if (tradingLt && tradingLt.system_prompt.includes("Scalper") && !tradingLt.system_prompt.includes("Blitz Trader")) {
+    const updated = tradingLt.system_prompt.replace(/Scalper/g, "Blitz Trader");
+    createPromptVersion("trading_lt", updated, "Updated: Scalper → Blitz Trader in soldier list", "system");
+  }
+
+  db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('scalper_blitz_migrated', 'true')").run();
 }
 
 // ============================================================
@@ -792,6 +830,7 @@ export function getAllAgents(): AgentRow[] {
   migrateTieredModels();
   migrateMarketEngine60s();
   migrateNewTradingPersonas();
+  migrateScalperToBlitzTrader();
   return db.prepare("SELECT * FROM agents ORDER BY sort_order").all() as AgentRow[];
 }
 
@@ -855,6 +894,58 @@ export function activatePromptVersion(agentId: string, version: number) {
   db.prepare("UPDATE agents SET system_prompt = ? WHERE id = ?").run(prompt.prompt_text, agentId);
 
   return prompt;
+}
+
+/**
+ * Update an agent's name and/or description.
+ * Used when the command chain renames or redescribes an agent.
+ */
+export function updateAgentMetadata(agentId: string, updates: { name?: string; description?: string }) {
+  const db = getDb();
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (updates.name) { sets.push("name = ?"); vals.push(updates.name); }
+  if (updates.description) { sets.push("description = ?"); vals.push(updates.description); }
+  if (sets.length === 0) return;
+  vals.push(agentId);
+  db.prepare(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  console.log(`[db] Updated agent ${agentId} metadata: ${JSON.stringify(updates)}`);
+}
+
+/**
+ * Extract name/description metadata from a proposed change.
+ * Parses JSON fields, prompt text patterns, and what_changed text.
+ */
+export function extractAgentMetadata(change: {
+  new_name?: string;
+  new_description?: string;
+  agent_name?: string;
+  description?: string;
+  new_prompt?: string;
+  what_changed?: string;
+}): { name?: string; description?: string } {
+  const result: { name?: string; description?: string } = {};
+
+  // 1. Check explicit new_name / new_description fields from LT JSON
+  if (change.new_name) result.name = change.new_name;
+  if (change.new_description) result.description = change.new_description;
+
+  // 2. Check if the new prompt starts with "You are '[Name]'" or 'You are "Name"'
+  if (!result.name && change.new_prompt) {
+    const nameMatch = change.new_prompt.match(/^You are ['"\u201C]([^'"\u201D]+)['"\u201D]/);
+    if (nameMatch) result.name = nameMatch[1];
+  }
+
+  // 3. Check what_changed for rename indicators
+  if (!result.name && change.what_changed) {
+    const renameMatch = change.what_changed.match(/rename[d]?\s+(?:to|as)\s+['"\u201C]([^'"\u201D]+)['"\u201D]/i);
+    if (renameMatch) result.name = renameMatch[1];
+    // Also: "New name: Blitz Trader"
+    const newNameMatch = change.what_changed.match(/new name[:\s]+['"\u201C]?([^'"\u201D,]+)['"\u201D]?/i);
+    if (!result.name && newNameMatch) result.name = newNameMatch[1].trim();
+  }
+
+  return result;
 }
 
 export function updateAgentModel(agentId: string, model: string | null) {

@@ -8,6 +8,8 @@ import {
   createPromptVersion,
   createNewAgent,
   deactivateAgent,
+  updateAgentMetadata,
+  extractAgentMetadata,
   getAllAgents,
 } from "@/lib/db/agents";
 import { getEffectiveModel, buildGeneralContext, buildLieutenantContext } from "@/lib/agents/prompt-composer";
@@ -374,16 +376,23 @@ export async function POST(request: NextRequest) {
 
     // Step 4: Parse proposed changes from Lieutenant's response
     console.log(`[DEBUG STEP 4] Parsing proposed changes from Lieutenant's response...`);
-    let proposedChanges: { agent_id: string; agent_name: string; what_changed: string; new_prompt: string }[] = [];
+    let proposedChanges: { agent_id: string; agent_name: string; what_changed: string; new_prompt: string; new_name?: string; new_description?: string; description?: string }[] = [];
     let parseMethod = "none";
     try {
       const parsed = parseAIResponse(ltResult.content, { requiredKey: "changes" });
       if (parsed) {
         console.log(`[DEBUG STEP 4] Parsed JSON with "changes" key via parseAIResponse`);
         if (Array.isArray(parsed.changes)) {
-          proposedChanges = parsed.changes.filter(
-            (c: Record<string, unknown>) => c.agent_id && c.new_prompt
-          );
+          proposedChanges = parsed.changes
+            .filter((c: Record<string, unknown>) => c.agent_id && c.new_prompt)
+            .map((c: Record<string, unknown>) => ({
+              agent_id: c.agent_id as string,
+              agent_name: (c.agent_name || c.agentName || c.agent_id) as string,
+              what_changed: (c.what_changed || c.whatChanged || "Updated") as string,
+              new_prompt: (c.new_prompt || c.newPrompt) as string,
+              new_name: (c.new_name || c.newName) as string | undefined,
+              new_description: (c.new_description || c.newDescription || c.description) as string | undefined,
+            }));
           parseMethod = "JSON";
           console.log(`[DEBUG STEP 4] Parsed ${proposedChanges.length} changes via JSON format`);
         } else {
@@ -406,7 +415,7 @@ export async function POST(request: NextRequest) {
           const name = nameMatch[1].trim();
           const idMap: Record<string, string> = {
             "momentum trader": "momentum_trader", "contrarian": "contrarian",
-            "scalper": "scalper", "news sniper": "news_sniper",
+            "scalper": "scalper", "blitz trader": "scalper", "news sniper": "news_sniper",
             "yolo trader": "yolo_trader", "yolo": "yolo_trader",
             "custom wrapper": "custom_wrapper",
             "custom strategy wrapper": "custom_wrapper",
@@ -513,6 +522,12 @@ export async function POST(request: NextRequest) {
         const notes = `Auto-approved via Order #${order.id} from ${lieutenant.name}`;
         createPromptVersion(change.agent_id, change.new_prompt, notes, lieutenantId);
         console.log(`[DEBUG STEP 6] Created new prompt version for ${change.agent_id}`);
+        // Also apply name/description changes if detected
+        const metadata = extractAgentMetadata(change);
+        if (metadata.name || metadata.description) {
+          updateAgentMetadata(change.agent_id, metadata);
+          console.log(`[DEBUG STEP 6] Updated ${change.agent_id} metadata:`, metadata);
+        }
       }
       updateOrder(order.id, {
         status: "executed",

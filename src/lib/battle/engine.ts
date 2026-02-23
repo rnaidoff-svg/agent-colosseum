@@ -532,7 +532,7 @@ const FALLBACK_NPC_PROMPT = `You are a competitive AI trader. Make trading decis
 const LEGACY_NPC_DEFS = [
   { id: "npc-alpha", name: "Momentum Trader", strategy: "momentum_trader", strategyLabel: "Momentum", maxTrades: 3, registryId: "momentum_trader" },
   { id: "npc-beta", name: "Contrarian", strategy: "contrarian", strategyLabel: "Contrarian", maxTrades: 2, registryId: "contrarian" },
-  { id: "npc-gamma", name: "Scalper", strategy: "scalper", strategyLabel: "Scalper", maxTrades: 3, registryId: "scalper" },
+  { id: "npc-gamma", name: "Blitz Trader", strategy: "scalper", strategyLabel: "Blitz Trader", maxTrades: 3, registryId: "scalper" },
   { id: "npc-delta", name: "News Sniper", strategy: "news_sniper", strategyLabel: "News Sniper", maxTrades: 2, registryId: "news_sniper" },
   { id: "npc-epsilon", name: "YOLO Trader", strategy: "yolo_trader", strategyLabel: "YOLO", maxTrades: 2, registryId: "yolo_trader" },
 ];

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOrder, getAgent, updateOrder, createPromptVersion, createNewAgent, deactivateAgent } from "@/lib/db/agents";
+import { getOrder, getAgent, updateOrder, createPromptVersion, createNewAgent, deactivateAgent, updateAgentMetadata, extractAgentMetadata } from "@/lib/db/agents";
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -54,8 +54,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           continue;
         }
       } else {
+        // Save new prompt version
         const notes = `Updated via Order #${orderId} from ${ltName}`;
         createPromptVersion(change.agent_id, change.new_prompt, notes, ltId);
+
+        // Extract and apply name/description changes
+        const metadata = extractAgentMetadata(change);
+        if (metadata.name || metadata.description) {
+          updateAgentMetadata(change.agent_id, metadata);
+          console.log(`[approve] Updated ${change.agent_id} metadata:`, metadata);
+        }
       }
       approved.push(change.agent_id);
     }

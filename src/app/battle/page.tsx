@@ -1118,7 +1118,7 @@ function BattleContent() {
       const defaults = [
         { name: "Momentum Trader", id: "momentum_trader", model: "google/gemini-2.5-flash" },
         { name: "Contrarian", id: "contrarian", model: "openai/gpt-4o-mini" },
-        { name: "Scalper", id: "scalper", model: "deepseek/deepseek-chat" },
+        { name: "Blitz Trader", id: "scalper", model: "deepseek/deepseek-chat" },
         { name: "News Sniper", id: "news_sniper", model: "x-ai/grok-3-mini" },
       ];
       defaults.forEach((d, idx) => {
