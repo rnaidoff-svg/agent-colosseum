@@ -10,6 +10,7 @@ import {
   getAllAgents,
 } from "@/lib/db/agents";
 import { getEffectiveModel, buildGeneralContext, buildLieutenantContext } from "@/lib/agents/prompt-composer";
+import { parseAIResponse } from "@/lib/utils/parseAIResponse";
 
 const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
@@ -301,10 +302,9 @@ export async function POST(request: NextRequest) {
     let proposedChanges: { agent_id: string; agent_name: string; what_changed: string; new_prompt: string }[] = [];
     let parseMethod = "none";
     try {
-      const jsonMatch = ltResult.content.match(/\{[\s\S]*"changes"[\s\S]*\}/);
-      if (jsonMatch) {
-        console.log(`[DEBUG STEP 4] Found JSON block with "changes" key (${jsonMatch[0].length} chars)`);
-        const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = parseAIResponse(ltResult.content, { requiredKey: "changes" });
+      if (parsed) {
+        console.log(`[DEBUG STEP 4] Parsed JSON with "changes" key via parseAIResponse`);
         if (Array.isArray(parsed.changes)) {
           proposedChanges = parsed.changes.filter(
             (c: Record<string, unknown>) => c.agent_id && c.new_prompt

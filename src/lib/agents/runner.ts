@@ -11,6 +11,7 @@ import {
   StockPrice,
 } from "../engine/types";
 import { AgentDecisionFn } from "../engine/game";
+import { parseAIResponse } from "../utils/parseAIResponse";
 
 // ------ Prompt builder ------
 
@@ -141,37 +142,31 @@ async function callOpenRouter(
 }
 
 function parseAgentResponse(raw: string): AgentDecision {
-  // Try to extract JSON from the response (handles markdown code blocks too)
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
+  const parsed = parseAIResponse(raw, { requiredKey: "actions" });
+
+  if (!parsed) {
     return { actions: [], reasoning: `Failed to parse response — holding. Raw: ${raw.slice(0, 200)}` };
   }
 
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
+  const actions = Array.isArray(parsed.actions)
+    ? parsed.actions
+        .filter(
+          (a: Record<string, unknown>) =>
+            a &&
+            typeof a.action === "string" &&
+            ["BUY", "SELL", "SHORT", "HOLD"].includes(a.action as string)
+        )
+        .map((a: Record<string, unknown>) => ({
+          action: a.action as "BUY" | "SELL" | "SHORT" | "HOLD",
+          asset: String(a.asset || ""),
+          quantity: Math.floor(Number(a.quantity) || 0),
+        }))
+    : [];
 
-    const actions = Array.isArray(parsed.actions)
-      ? parsed.actions
-          .filter(
-            (a: Record<string, unknown>) =>
-              a &&
-              typeof a.action === "string" &&
-              ["BUY", "SELL", "SHORT", "HOLD"].includes(a.action as string)
-          )
-          .map((a: Record<string, unknown>) => ({
-            action: a.action as "BUY" | "SELL" | "SHORT" | "HOLD",
-            asset: String(a.asset || ""),
-            quantity: Math.floor(Number(a.quantity) || 0),
-          }))
-      : [];
-
-    return {
-      actions,
-      reasoning: String(parsed.reasoning || "No reasoning provided"),
-    };
-  } catch {
-    return { actions: [], reasoning: `JSON parse error — holding. Raw: ${raw.slice(0, 200)}` };
-  }
+  return {
+    actions,
+    reasoning: String(parsed.reasoning || "No reasoning provided"),
+  };
 }
 
 async function llmDecision(

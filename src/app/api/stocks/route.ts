@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getEffectivePrompt, getEffectiveModel } from "@/lib/agents/prompt-composer";
 import { getActivePrompt } from "@/lib/db/agents";
+import { parseAIResponse } from "@/lib/utils/parseAIResponse";
 
 export const dynamic = "force-dynamic";
 
@@ -302,9 +303,8 @@ export async function GET() {
         const data = await res.json();
         const content = data.choices?.[0]?.message?.content;
         if (content) {
-          const jsonMatch = content.match(/\[[\s\S]*\]/);
-          if (jsonMatch) {
-            const tickers: string[] = JSON.parse(jsonMatch[0]);
+          const tickers = parseAIResponse(content, { type: "array" });
+          if (tickers && Array.isArray(tickers)) {
             const poolMap = new Map(STOCK_POOL.map((s) => [s.symbol, s]));
             const aiSelected = tickers.map((t: string) => poolMap.get(t.toUpperCase())).filter(Boolean) as CuratedStock[];
             if (aiSelected.length >= 3) {

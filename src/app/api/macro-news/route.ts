@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEffectivePrompt, getEffectiveModel } from "@/lib/agents/prompt-composer";
 import { getActivePrompt } from "@/lib/db/agents";
+import { parseAIResponse } from "@/lib/utils/parseAIResponse";
 
 const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
@@ -125,9 +126,8 @@ Return ONLY valid JSON — no markdown, no code fences, no explanation.`;
     }
 
     try {
-      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = parseAIResponse(result.content);
+      if (parsed) {
         if (parsed.headline) {
           // Extract per_stock_impacts
           let perStockImpacts: Record<string, number> | null = parsed.per_stock_impacts || null;

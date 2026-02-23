@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEffectivePrompt, getEffectiveModel } from "@/lib/agents/prompt-composer";
 import { getActivePrompt } from "@/lib/db/agents";
+import { parseAIResponse } from "@/lib/utils/parseAIResponse";
 
 const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
@@ -201,10 +202,8 @@ Rules:
     const content = result.content;
 
     try {
-      const jsonMatch = content.match(/\{[\s\S]*"trades"[\s\S]*\}/) || content.match(/```json\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        const jsonStr = jsonMatch[1] || jsonMatch[0];
-        const parsed = JSON.parse(jsonStr);
+      const parsed = parseAIResponse(content, { requiredKey: "trades" });
+      if (parsed) {
         if (parsed.trades && Array.isArray(parsed.trades)) {
           const validTickers = new Set(stocks.map((s) => s.ticker));
           const validTrades = parsed.trades

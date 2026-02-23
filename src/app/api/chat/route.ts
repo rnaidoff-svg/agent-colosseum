@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEffectivePrompt } from "@/lib/agents/prompt-composer";
 import { getActivePrompt } from "@/lib/db/agents";
+import { parseAIResponse } from "@/lib/utils/parseAIResponse";
 
 const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
@@ -257,32 +258,28 @@ Rules:
       const content = result.content;
 
       try {
-        const jsonMatch = content.match(/```json\s*([\s\S]*?)```/) || content.match(/\{[\s\S]*"trades"[\s\S]*\}/);
-        if (jsonMatch) {
-          const jsonStr = jsonMatch[1] || jsonMatch[0];
-          const parsed = JSON.parse(jsonStr);
-          if (parsed.trades && Array.isArray(parsed.trades)) {
-            const validTickers = new Set(stocks.map((s: StockInfo) => s.ticker));
-            const validTrades = parsed.trades
-              .filter((t: Record<string, unknown>) => {
-                const validAction = ["LONG", "SHORT", "CLOSE_LONG", "CLOSE_SHORT"].includes(t.action as string);
-                const validTicker = validTickers.has(t.ticker as string);
-                const validQty = typeof t.qty === "number" && t.qty > 0;
-                return validAction && validTicker && validQty;
-              })
-              .map((t: Record<string, unknown>) => ({
-                action: t.action,
-                ticker: t.ticker,
-                qty: Math.floor(t.qty as number),
-                reason: t.reason || "",
-              }));
+        const parsed = parseAIResponse(content, { requiredKey: "trades" });
+        if (parsed && parsed.trades && Array.isArray(parsed.trades)) {
+          const validTickers = new Set(stocks.map((s: StockInfo) => s.ticker));
+          const validTrades = parsed.trades
+            .filter((t: Record<string, unknown>) => {
+              const validAction = ["LONG", "SHORT", "CLOSE_LONG", "CLOSE_SHORT"].includes(t.action as string);
+              const validTicker = validTickers.has(t.ticker as string);
+              const validQty = typeof t.qty === "number" && t.qty > 0;
+              return validAction && validTicker && validQty;
+            })
+            .map((t: Record<string, unknown>) => ({
+              action: t.action,
+              ticker: t.ticker,
+              qty: Math.floor(t.qty as number),
+              reason: t.reason || "",
+            }));
 
-            return NextResponse.json({
-              content,
-              reasoning: parsed.reasoning || content,
-              trades: validTrades,
-            });
-          }
+          return NextResponse.json({
+            content,
+            reasoning: parsed.reasoning || content,
+            trades: validTrades,
+          });
         }
       } catch {
         // Parse failed
@@ -353,25 +350,21 @@ Rules:
     const content = result.content;
 
     try {
-      const jsonMatch = content.match(/```json\s*([\s\S]*?)```/) || content.match(/\{[\s\S]*"trades"[\s\S]*\}/);
-      if (jsonMatch) {
-        const jsonStr = jsonMatch[1] || jsonMatch[0];
-        const parsed = JSON.parse(jsonStr);
-        if (parsed.trades && Array.isArray(parsed.trades)) {
-          const validTrades = parsed.trades.filter((t: Record<string, unknown>) => {
-            const validAction = t.action === "LONG" || t.action === "SHORT";
-            const validTicker = stocks.some((s) => s.ticker === t.ticker);
-            const validQty = typeof t.qty === "number" && t.qty > 0;
-            return validAction && validTicker && validQty;
-          });
+      const parsed = parseAIResponse(content, { requiredKey: "trades" });
+      if (parsed && parsed.trades && Array.isArray(parsed.trades)) {
+        const validTrades = parsed.trades.filter((t: Record<string, unknown>) => {
+          const validAction = t.action === "LONG" || t.action === "SHORT";
+          const validTicker = stocks.some((s) => s.ticker === t.ticker);
+          const validQty = typeof t.qty === "number" && t.qty > 0;
+          return validAction && validTicker && validQty;
+        });
 
-          return NextResponse.json({
-            content,
-            trades: validTrades,
-            cashReserve: typeof parsed.cashReserve === "number" ? parsed.cashReserve : 0,
-            summary: parsed.summary || "",
-          });
-        }
+        return NextResponse.json({
+          content,
+          trades: validTrades,
+          cashReserve: typeof parsed.cashReserve === "number" ? parsed.cashReserve : 0,
+          summary: parsed.summary || "",
+        });
       }
     } catch {
       // Parse failed

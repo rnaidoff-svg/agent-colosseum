@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEffectivePrompt, getEffectiveModel } from "@/lib/agents/prompt-composer";
 import { getActivePrompt } from "@/lib/db/agents";
+import { parseAIResponse } from "@/lib/utils/parseAIResponse";
 
 const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
@@ -109,9 +110,8 @@ ${stockSummary}`;
     }
 
     try {
-      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = parseAIResponse(result.content);
+      if (parsed) {
         const validTickers = new Set(stocks.map((s) => s.ticker));
         const targets: Record<string, number> = {};
 
