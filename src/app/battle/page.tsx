@@ -1095,7 +1095,7 @@ function BattleContent() {
   const autoAgentParam = searchParams.get("autoAgent") === "1";
 
   // Build NPC configs from URL — only enabled NPCs are present
-  const DEFAULT_NPC_MODELS = ["google/gemini-2.5-flash", "deepseek/deepseek-chat", "openai/gpt-4o-mini", "anthropic/claude-sonnet-4-20250514"];
+  const DEFAULT_NPC_MODELS = ["google/gemini-2.5-flash", "openai/gpt-4o-mini", "deepseek/deepseek-chat", "x-ai/grok-3-mini"];
   const npcCountParam = searchParams.get("npcCount");
 
   const [npcConfigs] = useState<NpcConfig[]>(() => {

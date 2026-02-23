@@ -502,7 +502,7 @@ Return the 5 tickers and a brief reason why this set creates good gameplay and t
     type: "market",
     parent_id: "market_lt",
     description: "Determines stock price reactions to news events.",
-    system_prompt: `You are a market simulation engine. Given a news event and current stock data, predict the expected percentage price change for each stock over the next 45 seconds of trading.
+    system_prompt: `You are a market simulation engine. Given a news event and current stock data, predict the expected percentage price change for each stock over the next 60 seconds of trading.
 
 Respond with ONLY a JSON object mapping each ticker to its expected total percentage change (as a decimal, e.g., 0.05 for +5%):
 {"TICKER1": 0.03, "TICKER2": -0.02, ...}
@@ -512,7 +512,7 @@ Rules:
 - High-beta stocks should move more than low-beta stocks in the same sector
 - Company-specific news should heavily impact the named stock
 - Cross-sector spillover effects are real but smaller
-- Changes should be realistic for a 45-second window: typically -10% to +10%
+- Changes should be realistic for a 60-second window: typically -10% to +10%
 - Be decisive: significant news should cause significant moves`,
     model_override: null,
     is_active: 1,
@@ -611,6 +611,27 @@ function migrateTieredModels() {
   console.log("[migration] Tiered models: General/LTs → Opus 4.6, Soldiers → Gemini 2.5 Flash");
 }
 
+/**
+ * Migrate market_engine prompt from 45-second to 60-second window references.
+ * Only runs once.
+ */
+function migrateMarketEngine60s() {
+  const db = getDb();
+  const migrated = db.prepare("SELECT value FROM agent_system_config WHERE key = 'market_engine_60s_migrated'").get() as { value: string } | undefined;
+  if (migrated?.value === "true") return;
+
+  const current = db.prepare("SELECT system_prompt FROM agents WHERE id = 'market_engine'").get() as { system_prompt: string } | undefined;
+  if (current && current.system_prompt.includes("45 seconds")) {
+    const machineSeed = SEED_AGENTS.find((a) => a.id === "market_engine");
+    if (machineSeed) {
+      createPromptVersion("market_engine", machineSeed.system_prompt, "Auto-migrated: 45s → 60s round timing", "system");
+      console.log("[migration] Updated market_engine prompt to 60-second window");
+    }
+  }
+
+  db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('market_engine_60s_migrated', 'true')").run();
+}
+
 // ============================================================
 // Queries
 // ============================================================
@@ -624,6 +645,7 @@ export function getAllAgents(): AgentRow[] {
   migrateNewsAgentPrompts();
   migrateToOpus46();
   migrateTieredModels();
+  migrateMarketEngine60s();
   return db.prepare("SELECT * FROM agents ORDER BY sort_order").all() as AgentRow[];
 }
 

@@ -1271,7 +1271,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         }
 
         const elapsed = TRADING_DURATION - (prev - 1);
-        const newsTimes = [15, 30];
+        const newsTimes = [20, 40];
         for (const t of newsTimes) {
           if (elapsed >= t && elapsed < t + 2 && !midRoundNewsFiredRef.current.has(t)) {
             midRoundNewsFiredRef.current.add(t);

@@ -123,7 +123,7 @@ export interface NpcConfig {
 
 export const STARTING_CASH = 100_000;
 export const TOTAL_ROUNDS = 3;
-export const TRADING_DURATION = 45; // seconds
+export const TRADING_DURATION = 60; // seconds
 export const COUNTDOWN_DURATION = 10; // seconds
 export const ROUND_END_DURATION = 4; // seconds
 export const TICK_INTERVAL = 2; // seconds
