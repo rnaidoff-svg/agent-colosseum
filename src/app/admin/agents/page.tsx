@@ -759,6 +759,7 @@ function AgentDetailPanel({
                   value={agent?.model_override || "anthropic/claude-opus-4.6"}
                   onChange={handleSaveModel}
                   compact
+                  variant="command"
                 />
               </div>
             )}
@@ -1191,7 +1192,7 @@ export default function CommandCenterPage() {
             </div>
           </div>
           <div className="max-w-md">
-            <ModelSelector value={majorityModel} onChange={handleBulkModelSelect} compact />
+            <ModelSelector value={majorityModel} onChange={handleBulkModelSelect} compact variant="command" />
           </div>
         </div>
       </section>

@@ -589,6 +589,28 @@ function migrateToOpus46() {
   console.log("[migration] Migrated all agents to anthropic/claude-opus-4.6");
 }
 
+/**
+ * Migrate to tiered model assignment:
+ * - General + Lieutenants → Claude Opus 4.6 (premium, strategic decisions)
+ * - All Soldiers → Gemini 2.5 Flash (cheap/fast, high-volume calls)
+ * Only runs once.
+ */
+function migrateTieredModels() {
+  const db = getDb();
+  const migrated = db.prepare("SELECT value FROM agent_system_config WHERE key = 'tiered_models_migrated'").get() as { value: string } | undefined;
+  if (migrated?.value === "true") return;
+
+  // General + Lieutenants get Opus 4.6
+  db.prepare("UPDATE agents SET model_override = 'anthropic/claude-opus-4.6' WHERE rank IN ('general', 'lieutenant')").run();
+  // All soldiers get Gemini 2.5 Flash
+  db.prepare("UPDATE agents SET model_override = 'google/gemini-2.5-flash' WHERE rank = 'soldier'").run();
+  // Update system_model config to Gemini 2.5 Flash (default for new agents)
+  db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('system_model', 'google/gemini-2.5-flash')").run();
+  // Mark as done
+  db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('tiered_models_migrated', 'true')").run();
+  console.log("[migration] Tiered models: General/LTs → Opus 4.6, Soldiers → Gemini 2.5 Flash");
+}
+
 // ============================================================
 // Queries
 // ============================================================
@@ -601,6 +623,7 @@ export function getAllAgents(): AgentRow[] {
   ensureAllAgentsHaveModel();
   migrateNewsAgentPrompts();
   migrateToOpus46();
+  migrateTieredModels();
   return db.prepare("SELECT * FROM agents ORDER BY sort_order").all() as AgentRow[];
 }
 

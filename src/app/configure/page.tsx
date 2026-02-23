@@ -13,7 +13,7 @@ export default function ConfigurePage() {
   const router = useRouter();
 
   const [name, setName] = useState("");
-  const [model, setModel] = useState("anthropic/claude-opus-4.6");
+  const [model, setModel] = useState("google/gemini-2.5-flash");
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [customPrompt, setCustomPrompt] = useState("");
   const [autoAgent, setAutoAgent] = useState(false);
@@ -93,7 +93,7 @@ export default function ConfigurePage() {
 
       {/* Model Selection */}
       <Card className="p-6 mb-6">
-        <ModelSelector value={model} onChange={setModel} label="Model" />
+        <ModelSelector value={model} onChange={setModel} label="Model" variant="battle" />
       </Card>
 
       {/* Strategy Templates */}
@@ -186,6 +186,7 @@ export default function ConfigurePage() {
                     setNpcModels(next);
                   }}
                   compact
+                  variant="battle"
                 />
               </div>
             </div>

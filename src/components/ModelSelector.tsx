@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { QUICK_PICK_MODELS } from "@/lib/constants/defaultModels";
+import { BATTLE_QUICK_PICKS, COMMAND_QUICK_PICKS } from "@/lib/constants/defaultModels";
 import { getModelLabel } from "@/lib/utils/format";
 
 interface OpenRouterModel {
@@ -72,9 +72,11 @@ interface ModelSelectorProps {
   onChange: (modelId: string) => void;
   label?: string;
   compact?: boolean;
+  variant?: "battle" | "command";
 }
 
-export function ModelSelector({ value, onChange, label, compact = false }: ModelSelectorProps) {
+export function ModelSelector({ value, onChange, label, compact = false, variant = "battle" }: ModelSelectorProps) {
+  const quickPicks = variant === "command" ? COMMAND_QUICK_PICKS : BATTLE_QUICK_PICKS;
   const [allModels, setAllModels] = useState<OpenRouterModel[]>([]);
   const [search, setSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
@@ -164,7 +166,7 @@ export function ModelSelector({ value, onChange, label, compact = false }: Model
     setSearch(val);
   };
 
-  const isQuickPick = QUICK_PICK_MODELS.some((m) => m.id === value);
+  const isQuickPick = quickPicks.some((m) => m.id === value);
   const selectedLabel = getModelLabel(value);
 
   // Find selected model info from cache
@@ -211,7 +213,7 @@ export function ModelSelector({ value, onChange, label, compact = false }: Model
           <div className="px-3 py-2 border-b border-neutral-800">
             <div className="text-[9px] uppercase tracking-wider text-neutral-500 font-semibold mb-1.5">Quick Picks</div>
             <div className="flex flex-wrap gap-1.5">
-              {QUICK_PICK_MODELS.map((qp) => (
+              {quickPicks.map((qp) => (
                 <button
                   key={qp.id}
                   type="button"

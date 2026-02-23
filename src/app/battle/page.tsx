@@ -43,13 +43,33 @@ const SECTOR_LABEL: Record<string, string> = {
 };
 
 // ============================================================
-// Helper: Strip JSON from agent text
+// Helper: Clean agent text — strip JSON, markdown, limit length
 // ============================================================
 
-function stripJsonFromText(text: string): string {
-  let cleaned = text.replace(/```json\s*[\s\S]*?```/g, "").trim();
-  cleaned = cleaned.replace(/\{[\s\S]*?"trades"[\s\S]*?\}/g, "").trim();
-  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+function cleanAgentText(text: string): string {
+  if (!text) return "Strategy loaded.";
+  let cleaned = text;
+  // Remove markdown code fences (```json ... ``` or ``` ... ```)
+  cleaned = cleaned.replace(/```[\s\S]*?```/g, "");
+  // Remove JSON objects containing trades/actions/skips keys
+  cleaned = cleaned.replace(/\{[\s\S]*?("trades"|"actions"|"skips"|"reasoning"|"summary"|"cashReserve")[\s\S]*?\}/g, "");
+  // Remove JSON arrays [...] that look like trade arrays
+  cleaned = cleaned.replace(/\[[\s\S]*?\{[\s\S]*?("action"|"ticker"|"qty")[\s\S]*?\}[\s\S]*?\]/g, "");
+  // Strip markdown formatting
+  cleaned = cleaned.replace(/#{1,6}\s+/g, "");       // headers
+  cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, "$1"); // bold
+  cleaned = cleaned.replace(/\*([^*]+)\*/g, "$1");     // italic
+  cleaned = cleaned.replace(/__([^_]+)__/g, "$1");     // underline
+  cleaned = cleaned.replace(/`([^`]+)`/g, "$1");       // inline code
+  cleaned = cleaned.replace(/^[-*]\s+/gm, "");         // bullet points
+  cleaned = cleaned.replace(/^\d+\.\s+/gm, "");        // numbered lists
+  // Clean up whitespace
+  cleaned = cleaned.replace(/\n{2,}/g, " ").replace(/\s{2,}/g, " ").trim();
+  // Limit to ~3 sentences (split on sentence boundaries)
+  const sentences = cleaned.match(/[^.!?]+[.!?]+/g);
+  if (sentences && sentences.length > 3) {
+    cleaned = sentences.slice(0, 3).join("").trim();
+  }
   return cleaned || "Strategy loaded.";
 }
 
@@ -427,7 +447,7 @@ function MyAgentPanel({
               )}
             </div>
             {/* Reasoning — PART 2: 15px readable */}
-            <p className="text-[13px] leading-relaxed text-neutral-300 mb-1.5">{stripJsonFromText(entry.reasoning)}</p>
+            <p className="text-[13px] leading-relaxed text-neutral-300 mb-1.5">{cleanAgentText(entry.reasoning)}</p>
             {/* Trade cards */}
             {entry.trades.length > 0 ? (
               <div className="flex flex-wrap gap-1.5 mb-1">
@@ -480,7 +500,7 @@ function MyAgentPanel({
             {chatMessages.map((m, i) => (
               <div key={i} className={`text-[13px] leading-relaxed ${m.role === "user" ? "text-blue-400" : "text-neutral-300"}`}>
                 <span className="font-semibold text-[10px] uppercase tracking-wider opacity-60">{m.role === "user" ? "You" : "Agent"}</span>
-                <p className="mt-0.5">{m.role === "assistant" ? stripJsonFromText(m.content) : m.content}</p>
+                <p className="mt-0.5">{m.role === "assistant" ? cleanAgentText(m.content) : m.content}</p>
               </div>
             ))}
             {chatLoading && <div className="text-xs text-neutral-500 animate-pulse">Thinking...</div>}
