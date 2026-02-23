@@ -13,7 +13,7 @@ export default function ConfigurePage() {
   const router = useRouter();
 
   const [name, setName] = useState("");
-  const [model, setModel] = useState("google/gemini-2.5-flash");
+  const [model, setModel] = useState("anthropic/claude-opus-4.6");
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [customPrompt, setCustomPrompt] = useState("");
   const [autoAgent, setAutoAgent] = useState(false);

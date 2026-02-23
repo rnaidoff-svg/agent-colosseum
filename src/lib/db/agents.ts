@@ -571,6 +571,24 @@ function cleanupDeadAgents() {
   db.prepare("DELETE FROM agents WHERE is_active = 0").run();
 }
 
+/**
+ * Migrate all agents to Claude Opus 4.6 as the default model.
+ * Only runs once — checks a config flag.
+ */
+function migrateToOpus46() {
+  const db = getDb();
+  const migrated = db.prepare("SELECT value FROM agent_system_config WHERE key = 'opus46_migrated'").get() as { value: string } | undefined;
+  if (migrated?.value === "true") return;
+
+  // Update all agents to Opus 4.6
+  db.prepare("UPDATE agents SET model_override = 'anthropic/claude-opus-4.6'").run();
+  // Update system_model config
+  db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('system_model', 'anthropic/claude-opus-4.6')").run();
+  // Mark as done
+  db.prepare("INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('opus46_migrated', 'true')").run();
+  console.log("[migration] Migrated all agents to anthropic/claude-opus-4.6");
+}
+
 // ============================================================
 // Queries
 // ============================================================
@@ -582,6 +600,7 @@ export function getAllAgents(): AgentRow[] {
   cleanupDeadAgents();
   ensureAllAgentsHaveModel();
   migrateNewsAgentPrompts();
+  migrateToOpus46();
   return db.prepare("SELECT * FROM agents ORDER BY sort_order").all() as AgentRow[];
 }
 
@@ -663,7 +682,7 @@ export function updateAllAgentModels(model: string) {
  */
 export function ensureAllAgentsHaveModel() {
   const db = getDb();
-  const systemModel = getSystemConfig("system_model") || "google/gemini-2.5-flash";
+  const systemModel = getSystemConfig("system_model") || "anthropic/claude-opus-4.6";
   db.prepare("UPDATE agents SET model_override = ? WHERE model_override IS NULL").run(systemModel);
 }
 

@@ -756,7 +756,7 @@ function AgentDetailPanel({
             {isAdmin && showModelPicker && (
               <div className="max-w-sm">
                 <ModelSelector
-                  value={agent?.model_override || "google/gemini-2.5-flash"}
+                  value={agent?.model_override || "anthropic/claude-opus-4.6"}
                   onChange={handleSaveModel}
                   compact
                 />

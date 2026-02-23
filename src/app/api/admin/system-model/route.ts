@@ -3,7 +3,7 @@ import { getSystemConfig, setSystemConfig } from "@/lib/db/agents";
 
 export async function GET() {
   try {
-    const model = getSystemConfig("system_model") || "google/gemini-2.5-flash";
+    const model = getSystemConfig("system_model") || "anthropic/claude-opus-4.6";
     return NextResponse.json({ model });
   } catch (error) {
     console.error("System model GET error:", error);

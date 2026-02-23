@@ -43,17 +43,19 @@ interface OrderData {
   order_text: string;
   general_response: string | null;
   lieutenant_id: string | null;
+  lieutenant_order: string | null;
   lieutenant_response: string | null;
   affected_agents: string | null;
+  proposed_changes: string | null;
   status: string;
   created_at: string;
+  executed_at: string | null;
 }
 
 // ============================================================
 // Utility
 // ============================================================
 
-/** Flatten all tree nodes to compute majority model */
 function flattenTreeNodes(nodes: AgentTreeNode[]): AgentTreeNode[] {
   const result: AgentTreeNode[] = [];
   for (const n of nodes) {
@@ -95,7 +97,50 @@ function estimateTokens(text: string): number {
 }
 
 // ============================================================
-// SVG Org Chart (read-only version)
+// Diff View (read-only)
+// ============================================================
+
+function DiffView({ oldText, newText }: { oldText: string; newText: string }) {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const maxLen = Math.max(oldLines.length, newLines.length);
+
+  return (
+    <div className="font-[family-name:var(--font-geist-mono)] text-[11px] leading-relaxed overflow-x-auto max-h-60 overflow-y-auto">
+      {Array.from({ length: maxLen }, (_, i) => {
+        const ol = oldLines[i] ?? "";
+        const nl = newLines[i] ?? "";
+        if (ol === nl) {
+          return (
+            <div key={i} className="flex">
+              <span className="w-8 text-right text-neutral-600 pr-2 select-none shrink-0">{i + 1}</span>
+              <span className="text-neutral-400 flex-1 whitespace-pre-wrap">{ol}</span>
+            </div>
+          );
+        }
+        return (
+          <div key={i}>
+            {ol && (
+              <div className="flex bg-red-500/5">
+                <span className="w-8 text-right text-red-500/50 pr-2 select-none shrink-0">-</span>
+                <span className="text-red-400/80 flex-1 whitespace-pre-wrap">{ol}</span>
+              </div>
+            )}
+            {nl && (
+              <div className="flex bg-green-500/5">
+                <span className="w-8 text-right text-green-500/50 pr-2 select-none shrink-0">+</span>
+                <span className="text-green-400/80 flex-1 whitespace-pre-wrap">{nl}</span>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================
+// SVG Org Chart (read-only)
 // ============================================================
 
 const NODE_W = 180;
@@ -209,7 +254,7 @@ function OrgChart({ tree, onClickNode, majorityModel }: { tree: AgentTreeNode[];
 }
 
 // ============================================================
-// Agent Detail Panel (read-only for public)
+// Agent Detail Panel (read-only — no edit, no model change)
 // ============================================================
 
 function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () => void }) {
@@ -218,8 +263,9 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
   const [versions, setVersions] = useState<PromptVersion[]>([]);
   const [relatedOrders, setRelatedOrders] = useState<OrderData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"effective" | "history" | "activity">("effective");
+  const [tab, setTab] = useState<"effective" | "edit" | "history" | "activity">("effective");
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null);
+  const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
@@ -251,6 +297,7 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
   const rankColor = agent?.rank === "general" ? "text-amber-400" : agent?.rank === "lieutenant" ? "text-blue-400" : "text-neutral-400";
   const fullPrompt = sections.map(s => s.promptText).join("\n\n---\n\n");
   const totalTokens = estimateTokens(fullPrompt);
+  const ownPrompt = sections.find(s => s.agentId === agentId)?.promptText || "";
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={onClose}>
@@ -281,14 +328,14 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
           </div>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs — includes "edit" tab (read-only) */}
         <div className="flex border-b border-neutral-800 px-6 shrink-0">
-          {(["effective", "history", "activity"] as const).map(t => (
+          {(["effective", "edit", "history", "activity"] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-4 py-2.5 text-xs font-semibold uppercase tracking-wider border-b-2 transition-colors ${
                 tab === t ? "border-amber-500 text-amber-400" : "border-transparent text-neutral-500 hover:text-neutral-300"
               }`}>
-              {t === "effective" ? "Effective Prompt" : t === "history" ? "Version History" : "Activity"}
+              {t === "effective" ? "Effective Prompt" : t === "edit" ? "Edit Prompt" : t === "history" ? "Version History" : "Activity"}
             </button>
           ))}
         </div>
@@ -298,6 +345,7 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
           {loading ? (
             <div className="text-neutral-500 text-sm animate-pulse">Loading...</div>
           ) : tab === "effective" ? (
+            /* TAB 1: Effective Prompt */
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="text-[10px] text-neutral-500">
@@ -324,8 +372,40 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
                 );
               })}
             </div>
+          ) : tab === "edit" ? (
+            /* TAB 2: Edit Prompt (READ-ONLY for public page) */
+            <div className="space-y-3">
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                <p className="text-xs text-amber-400">Editing is available in the Command Center.</p>
+                <p className="text-[10px] text-neutral-500 mt-1">This is a read-only view of the agent&apos;s current prompt.</p>
+              </div>
+              <div className="flex items-center justify-between">
+                <h4 className="text-[10px] uppercase tracking-wider font-bold text-neutral-500">Current Prompt</h4>
+                <div className="text-[10px] text-neutral-600">
+                  {ownPrompt.length.toLocaleString()} chars | ~{estimateTokens(ownPrompt).toLocaleString()} tokens
+                </div>
+              </div>
+              <pre className="text-[11px] whitespace-pre-wrap rounded-lg p-4 leading-relaxed text-neutral-300 bg-neutral-800/60 border border-neutral-700 max-h-[60vh] overflow-y-auto">
+                {ownPrompt || "(No prompt)"}
+              </pre>
+            </div>
           ) : tab === "history" ? (
-            <div className="space-y-2">
+            /* TAB 3: Version History */
+            <div className="space-y-3">
+              {compareVersions && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 mb-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] uppercase tracking-wider font-bold text-amber-400">
+                      Comparing v{compareVersions[0]} vs v{compareVersions[1]}
+                    </span>
+                    <button onClick={() => setCompareVersions(null)} className="text-[10px] text-neutral-400 hover:text-neutral-200">&times; Close</button>
+                  </div>
+                  <DiffView
+                    oldText={versions.find(v => v.version === compareVersions[0])?.prompt_text || ""}
+                    newText={versions.find(v => v.version === compareVersions[1])?.prompt_text || ""}
+                  />
+                </div>
+              )}
               {versions.length === 0 ? (
                 <div className="text-neutral-600 text-sm">No version history</div>
               ) : (
@@ -352,10 +432,16 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
                             {v.is_active === 1 ? <span className="text-amber-500 font-bold">{"\u25CF"}</span> : <span className="text-neutral-700">{"\u25CB"}</span>}
                           </td>
                           <td className="py-2 px-2 text-right">
-                            <button onClick={() => setExpandedVersion(expandedVersion === v.version ? null : v.version)}
-                              className="px-1.5 py-0.5 text-[10px] rounded text-neutral-400 hover:text-neutral-200">
-                              {expandedVersion === v.version ? "Hide" : "View"}
-                            </button>
+                            <div className="flex items-center justify-end gap-1">
+                              <button onClick={() => setExpandedVersion(expandedVersion === v.version ? null : v.version)}
+                                className="px-1.5 py-0.5 text-[10px] rounded text-neutral-400 hover:text-neutral-200">
+                                {expandedVersion === v.version ? "Hide" : "View"}
+                              </button>
+                              {versions.length > 1 && v.version > 1 && (
+                                <button onClick={() => setCompareVersions([v.version - 1, v.version])}
+                                  className="px-1.5 py-0.5 text-[10px] rounded text-blue-400 hover:text-blue-300">Compare</button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -374,7 +460,7 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
               )}
             </div>
           ) : (
-            /* Activity tab */
+            /* TAB 4: Activity */
             <div className="space-y-4">
               <div className="rounded-xl border border-neutral-800 bg-neutral-800/20 p-6 text-center">
                 <div className="text-sm font-semibold text-neutral-400 mb-1">Agent Activity Log &mdash; Coming Soon</div>
@@ -382,7 +468,7 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
               </div>
               {relatedOrders.length > 0 && (
                 <div>
-                  <h4 className="text-[10px] uppercase tracking-wider font-bold text-neutral-500 mb-2">Recent Orders Affecting This Agent</h4>
+                  <h4 className="text-[10px] uppercase tracking-wider font-bold text-neutral-500 mb-2">Orders Affecting This Agent</h4>
                   <div className="space-y-1.5">
                     {relatedOrders.map(order => (
                       <OrderHistoryCard key={order.id} order={order} />
@@ -399,14 +485,33 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
 }
 
 // ============================================================
-// Order History Card (public view — expanded shows conversation)
+// Order History Card (full chain view)
 // ============================================================
+
+interface SoldierChange {
+  agent_id: string;
+  agent_name: string;
+  what_changed: string;
+  new_prompt: string;
+  old_prompt?: string;
+}
 
 function OrderHistoryCard({ order }: { order: OrderData }) {
   const [expanded, setExpanded] = useState(false);
+  const [showDiffs, setShowDiffs] = useState<Set<string>>(new Set());
   const affected: string[] = order.affected_agents ? JSON.parse(order.affected_agents) : [];
+  const changes: SoldierChange[] = order.proposed_changes ? JSON.parse(order.proposed_changes) : [];
   const timeAgo = getTimeAgo(order.created_at);
   const statusIcon = order.status === "executed" ? "\u2705" : order.status === "rejected" ? "\u274C" : "\u23F3";
+  const statusLabel = order.status === "executed" ? "Executed" : order.status === "rejected" ? "Rejected" : "Pending";
+
+  const toggleDiff = (agentId: string) => {
+    setShowDiffs(prev => {
+      const next = new Set(prev);
+      if (next.has(agentId)) next.delete(agentId); else next.add(agentId);
+      return next;
+    });
+  };
 
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 overflow-hidden">
@@ -415,7 +520,9 @@ function OrderHistoryCard({ order }: { order: OrderData }) {
           <div className="flex items-center gap-2 text-[10px] text-neutral-500 mb-0.5">
             <span className="font-[family-name:var(--font-geist-mono)]">#{order.id}</span>
             <span>{timeAgo}</span>
-            <span>{statusIcon} {order.status}</span>
+            <span className={order.status === "executed" ? "text-green-400" : order.status === "rejected" ? "text-red-400" : "text-amber-400"}>
+              {statusIcon} {statusLabel}
+            </span>
             {affected.length > 0 && <span>{affected.length} agent{affected.length > 1 ? "s" : ""}</span>}
           </div>
           <p className="text-xs text-neutral-300 truncate">&ldquo;{order.order_text}&rdquo;</p>
@@ -429,12 +536,23 @@ function OrderHistoryCard({ order }: { order: OrderData }) {
             <div className="text-[9px] uppercase tracking-wider font-bold text-neutral-400 mb-1">{"👤"} Commander</div>
             <p className="text-[11px] text-neutral-400 italic">&ldquo;{order.order_text}&rdquo;</p>
           </div>
+
+          {/* General */}
           {order.general_response && (
             <div>
               <div className="text-[9px] uppercase tracking-wider font-bold text-amber-500 mb-1">{"\u2605"} The General</div>
               <pre className="text-[11px] text-neutral-400 whitespace-pre-wrap bg-neutral-800/30 rounded-lg p-2.5 max-h-40 overflow-y-auto">{order.general_response}</pre>
             </div>
           )}
+
+          {/* Delegation indicator */}
+          {order.lieutenant_id && (
+            <div className="flex items-center gap-2 text-amber-500/70 text-[10px] pl-4 font-semibold uppercase tracking-wider">
+              <span className="text-amber-500">{"\u2192"}</span> Delegated to {order.lieutenant_id === "trading_lt" ? "Trading Operations" : order.lieutenant_id === "market_lt" ? "Market Operations" : "Analytics"} Lieutenant
+            </div>
+          )}
+
+          {/* Lieutenant */}
           {order.lieutenant_response && (
             <div>
               <div className="text-[9px] uppercase tracking-wider font-bold text-blue-400 mb-1">
@@ -443,6 +561,49 @@ function OrderHistoryCard({ order }: { order: OrderData }) {
               <pre className="text-[11px] text-neutral-400 whitespace-pre-wrap bg-neutral-800/30 rounded-lg p-2.5 max-h-40 overflow-y-auto">{order.lieutenant_response}</pre>
             </div>
           )}
+
+          {/* Soldier updates with diffs */}
+          {changes.length > 0 && (
+            <div>
+              <div className="text-[9px] uppercase tracking-wider font-bold text-neutral-500 mb-2">{"\u25CF"} Soldier Updates</div>
+              <div className="space-y-2">
+                {changes.map(c => (
+                  <div key={c.agent_id} className="rounded-lg border border-neutral-800 bg-neutral-800/20 p-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-neutral-200">{c.agent_name || c.agent_id}</span>
+                        <span className="text-[9px] text-neutral-500">{c.what_changed}</span>
+                      </div>
+                      <button onClick={() => toggleDiff(c.agent_id)}
+                        className="text-[10px] text-amber-400 hover:text-amber-300">
+                        {showDiffs.has(c.agent_id) ? "Hide Diff" : "View Diff"}
+                      </button>
+                    </div>
+                    {showDiffs.has(c.agent_id) && c.old_prompt && (
+                      <div className="rounded-lg border border-neutral-800 overflow-hidden p-2 bg-neutral-800/30 mt-2">
+                        <DiffView oldText={c.old_prompt} newText={c.new_prompt} />
+                      </div>
+                    )}
+                    {showDiffs.has(c.agent_id) && !c.old_prompt && (
+                      <pre className="text-[10px] text-neutral-400 whitespace-pre-wrap bg-neutral-800/30 rounded-lg p-2 mt-2 max-h-40 overflow-y-auto">{c.new_prompt}</pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Status badge */}
+          <div className="flex items-center gap-2 pt-1 border-t border-neutral-800/50">
+            <span className={`text-[10px] font-semibold uppercase tracking-wider ${
+              order.status === "executed" ? "text-green-400" : order.status === "rejected" ? "text-red-400" : "text-amber-400"
+            }`}>
+              {statusIcon} {statusLabel}
+            </span>
+            {order.executed_at && (
+              <span className="text-[10px] text-neutral-600">{getTimeAgo(order.executed_at)}</span>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -500,9 +661,9 @@ export default function AgentsPage() {
       {/* Header */}
       <div className="text-center mb-8 max-w-4xl mx-auto">
         <h1 className="text-3xl font-bold">Agent Architecture</h1>
-        <p className="mt-2 text-neutral-400">Watch How the Colosseum Works</p>
+        <p className="mt-2 text-neutral-400">Full Transparency &mdash; Every AI Decision Visible</p>
         <p className="mt-1 text-sm text-neutral-600">
-          Every AI agent, every prompt, fully transparent. {agentCount} agents. Click any to inspect its full prompt chain.
+          {agentCount} agents on <span className="text-neutral-400 font-medium">{getModelLabel(majorityModel)}</span>. Click any agent to inspect its full prompt chain, version history, and activity.
         </p>
       </div>
 
@@ -532,13 +693,19 @@ export default function AgentsPage() {
         </div>
       </section>
 
-      {/* Order History — public can see conversations */}
+      {/* Command History — full transparency */}
       <section className="max-w-4xl mx-auto">
-        <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-3">Command History</h2>
-        <p className="text-[11px] text-neutral-600 mb-3">Watch how the admin commands flow through the AI chain of command. Commander {"\u2192"} General {"\u2192"} Lieutenant {"\u2192"} Soldiers.</p>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider">Command History</h2>
+          <span className="text-[10px] text-neutral-600">{orders.length} order{orders.length !== 1 ? "s" : ""}</span>
+        </div>
+        <p className="text-[11px] text-neutral-600 mb-3">
+          Full transparency &mdash; every AI decision, every prompt change, visible to all. Commander {"\u2192"} General {"\u2192"} Lieutenant {"\u2192"} Soldiers.
+        </p>
         {orders.length === 0 ? (
           <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-8 text-center text-neutral-600">
             <p className="text-sm">No commands have been issued yet.</p>
+            <p className="text-[11px] mt-1 text-neutral-700">Orders from the Command Center will appear here with full conversation chains.</p>
           </div>
         ) : (
           <div className="space-y-1.5">

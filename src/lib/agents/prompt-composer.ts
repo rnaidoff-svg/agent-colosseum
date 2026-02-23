@@ -35,10 +35,10 @@ export function getEffectiveModel(agentId: string): string {
     const agents = getAllAgents();
     const agent = agents.find((a) => a.id === agentId);
     if (agent?.model_override) return agent.model_override;
-    return getSystemConfig("system_model") || "google/gemini-2.5-flash";
+    return getSystemConfig("system_model") || "anthropic/claude-opus-4.6";
   } catch (err) {
     console.warn(`[prompt-composer] WARNING: getEffectiveModel failed for ${agentId}, using fallback:`, err);
-    return "google/gemini-2.5-flash";
+    return "anthropic/claude-opus-4.6";
   }
 }
 
@@ -89,7 +89,7 @@ export function getEffectivePrompt(agentId: string): {
 export function getAgentTree(): AgentTreeNode[] {
   try {
     const agents = getAllAgents();
-    const fallbackModel = getSystemConfig("system_model") || "google/gemini-2.5-flash";
+    const fallbackModel = getSystemConfig("system_model") || "anthropic/claude-opus-4.6";
 
     const nodeMap = new Map<string, AgentTreeNode>();
 
@@ -138,7 +138,7 @@ export function getAgentTree(): AgentTreeNode[] {
 export function buildGeneralContext(): string {
   try {
     const agents = getAllAgents();
-    const fallbackModel = getSystemConfig("system_model") || "google/gemini-2.5-flash";
+    const fallbackModel = getSystemConfig("system_model") || "anthropic/claude-opus-4.6";
 
     const lieutenants = agents.filter((a) => a.rank === "lieutenant");
     const soldiers = agents.filter((a) => a.rank === "soldier");
@@ -196,7 +196,7 @@ export function buildGeneralContext(): string {
 export function buildLieutenantContext(lieutenantId: string): string {
   try {
     const agents = getAllAgents();
-    const fallbackModel = getSystemConfig("system_model") || "google/gemini-2.5-flash";
+    const fallbackModel = getSystemConfig("system_model") || "anthropic/claude-opus-4.6";
     const soldiers = agents.filter((a) => a.parent_id === lieutenantId && a.rank === "soldier");
 
     if (soldiers.length === 0) return "\n\nYOUR CURRENT SOLDIERS:\n(none)\n";

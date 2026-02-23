@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getEffectivePrompt } from "@/lib/agents/prompt-composer";
 import { getActivePrompt } from "@/lib/db/agents";
 
-const FALLBACK_MODEL = "google/gemini-2.5-flash";
+const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
 // Map user strategy labels to registry agent IDs
 const STRATEGY_TO_AGENT_ID: Record<string, string> = {

@@ -11,7 +11,7 @@ import {
 } from "@/lib/db/agents";
 import { getEffectiveModel, buildGeneralContext, buildLieutenantContext } from "@/lib/agents/prompt-composer";
 
-const FALLBACK_MODEL = "google/gemini-2.5-flash";
+const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
 async function callOpenRouter(
   apiKey: string,

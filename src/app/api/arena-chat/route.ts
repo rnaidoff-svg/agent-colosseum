@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const FALLBACK_MODEL = "google/gemini-2.5-flash";
+const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
 interface ArenaChatRequestBody {
   agent: {
