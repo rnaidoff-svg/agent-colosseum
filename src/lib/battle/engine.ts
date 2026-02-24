@@ -124,50 +124,11 @@ export interface NpcConfig {
 // ------ Constants ------
 
 export const STARTING_CASH = 100_000;
-export const MATCH_DURATION = 100; // seconds (1:40)
-export const EVENTS_PER_MATCH = 5;
-export const EVENT_INTERVAL = 20; // seconds between events
-
-// Legacy aliases — kept so old imports don't break during transition
-export const TOTAL_ROUNDS = 1;
-export const TRADING_DURATION = MATCH_DURATION;
-export const COUNTDOWN_DURATION = 0;
-export const ROUND_END_DURATION = 0;
-export const TICK_INTERVAL = 999; // effectively disabled — no drift
-
-// ------ Severity clamping (max absolute % per stock per event) ------
-
-export const SEVERITY_CLAMP: Record<NewsSeverity, number> = {
-  LOW: 2,       // max ±2%
-  MODERATE: 4,  // max ±4%
-  HIGH: 7,      // max ±7%
-  EXTREME: 12,  // max ±12%
-};
-
-export const SPY_CLAMP = 3; // SPY always ±3% regardless of severity
-
-/**
- * Clamp per-stock impacts based on severity.
- * Returns the clamped impacts and logs any clamps applied.
- */
-export function clampImpacts(
-  impacts: Record<string, number>,
-  severity: NewsSeverity,
-  label: string
-): Record<string, number> {
-  const maxPct = SEVERITY_CLAMP[severity] || 7;
-  const clamped: Record<string, number> = {};
-  for (const [ticker, raw] of Object.entries(impacts)) {
-    const clampLimit = ticker === "SPY" ? SPY_CLAMP : maxPct;
-    if (Math.abs(raw) > clampLimit) {
-      console.log(`  CLAMPED ${ticker}: ${raw >= 0 ? "+" : ""}${raw.toFixed(1)}% to ${raw >= 0 ? "+" : "-"}${clampLimit}% (severity: ${severity}) [${label}]`);
-      clamped[ticker] = raw >= 0 ? clampLimit : -clampLimit;
-    } else {
-      clamped[ticker] = raw;
-    }
-  }
-  return clamped;
-}
+export const TOTAL_ROUNDS = 3;
+export const TRADING_DURATION = 60; // seconds
+export const COUNTDOWN_DURATION = 10; // seconds
+export const ROUND_END_DURATION = 4; // seconds
+export const TICK_INTERVAL = 2; // seconds
 
 // ------ Severity ranges (base_impact_pct magnitude) ------
 
@@ -199,20 +160,9 @@ const SECTOR_MODIFIERS: Record<string, Record<string, number>> = {
 
 // ------ News escalation by round ------
 
-/** @deprecated Use getSeverityForEvent instead */
 export function getSeverityForRound(round: number): NewsSeverity {
-  return getSeverityForEvent(round);
-}
-
-/**
- * Severity escalation by event number (1-5):
- *  Events 1-2: LOW or MODERATE
- *  Events 3-4: MODERATE or HIGH
- *  Event 5: HIGH or EXTREME
- */
-export function getSeverityForEvent(eventNum: number): NewsSeverity {
-  if (eventNum <= 2) return pickRandom(["LOW", "MODERATE"] as NewsSeverity[]);
-  if (eventNum <= 4) return pickRandom(["MODERATE", "HIGH"] as NewsSeverity[]);
+  if (round <= 1) return pickRandom(["LOW", "MODERATE"] as NewsSeverity[]);
+  if (round === 2) return pickRandom(["MODERATE", "HIGH"] as NewsSeverity[]);
   return pickRandom(["HIGH", "EXTREME"] as NewsSeverity[]);
 }
 
@@ -254,11 +204,16 @@ export function initBattleStocks(profiles: StockProfile[]): BattleStock[] {
 // ------ Price ticking ------
 
 /**
- * tickPrices — NO-OP. Prices are frozen between news events.
- * All price changes come exclusively from applyNewsImpacts() when events fire.
+ * tickPrices — drift-only random walk between news events.
+ * Tiny ±0.05% random noise per tick. No news-driven movement here.
+ * All meaningful price changes come from applyNewsImpacts().
  */
 export function tickPrices(stocks: BattleStock[]): BattleStock[] {
-  return stocks; // frozen — no drift
+  return stocks.map((stock) => {
+    const drift = (Math.random() - 0.5) * 0.001; // ±0.05%
+    const newPrice = Math.max(0.01, Math.round(stock.price * (1 + drift) * 100) / 100);
+    return { ...stock, prevTickPrice: stock.price, price: newPrice };
+  });
 }
 
 /**
@@ -1079,14 +1034,13 @@ export function computeBestWorstTrade(
 
 export function scheduleNpcTrades(npcs: NpcAgent[]): Record<string, number[]> {
   const schedule: Record<string, number[]> = {};
-  const duration = MATCH_DURATION;
 
   for (const npc of npcs) {
     const numTrades = 1 + Math.floor(Math.random() * npc.maxTradesPerRound);
     const times: number[] = [];
     for (let i = 0; i < numTrades; i++) {
-      const windowStart = (duration / numTrades) * i + 3;
-      const windowEnd = (duration / numTrades) * (i + 1) - 2;
+      const windowStart = (TRADING_DURATION / numTrades) * i + 3;
+      const windowEnd = (TRADING_DURATION / numTrades) * (i + 1) - 2;
       times.push(Math.floor(windowStart + Math.random() * Math.max(1, windowEnd - windowStart)));
     }
     times.sort((a, b) => a - b);
