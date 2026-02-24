@@ -15,8 +15,8 @@ import {
   type NpcConfig,
   type StandingEntry,
   type TradeInfo,
-  TOTAL_ROUNDS,
   STARTING_CASH,
+  EVENTS_PER_MATCH,
   computeStockImpacts,
 } from "@/lib/battle/engine";
 import { STRATEGY_TEMPLATES } from "@/lib/constants/strategyTemplates";
@@ -78,15 +78,14 @@ function cleanAgentText(text: string): string {
 // ============================================================
 
 function TopBar({
-  round, phase, countdown, tradingTimeLeft, userCash, openPnl, userTotalValue, onExit,
+  phase, tradingTimeLeft, currentEvent, userCash, openPnl, userTotalValue, onExit,
 }: {
-  round: number; phase: BattlePhase; countdown: number; tradingTimeLeft: number;
+  phase: BattlePhase; tradingTimeLeft: number; currentEvent: number;
   userCash: number; openPnl: number; userTotalValue: number; onExit: () => void;
 }) {
   const timeDisplay = phase === "trading"
     ? `${Math.floor(tradingTimeLeft / 60)}:${String(tradingTimeLeft % 60).padStart(2, "0")}`
-    : phase === "pre_round" ? `Starting in ${countdown}s`
-    : phase === "round_end" ? "Round over" : "Match over";
+    : "Match over";
 
   const urgent = phase === "trading" && tradingTimeLeft <= 10;
   const totalReturn = ((userTotalValue - STARTING_CASH) / STARTING_CASH);
@@ -97,9 +96,9 @@ function TopBar({
         <button onClick={onExit}
           className="text-xs font-medium text-neutral-500 hover:text-red-400 transition-colors px-2 py-1 rounded border border-neutral-700 hover:border-red-500/40">EXIT</button>
         <div className="text-sm">
-          <span className="text-neutral-500">R</span>
-          <span className="text-neutral-100 font-bold">{round}</span>
-          <span className="text-neutral-500">/{TOTAL_ROUNDS}</span>
+          <span className="text-neutral-500">Event </span>
+          <span className="text-neutral-100 font-bold">{currentEvent}</span>
+          <span className="text-neutral-500">/{EVENTS_PER_MATCH}</span>
         </div>
         <div className={`font-[family-name:var(--font-geist-mono)] text-sm font-semibold px-3 py-1 rounded-md ${
           urgent ? "bg-red-500/15 text-red-400 animate-pulse" : "bg-neutral-800 text-neutral-300"
@@ -380,7 +379,6 @@ function MyAgentPanel({
 }: {
   strategy: AgentStrategyRec | null; adjustments: AgentAdjustment[]; loading: boolean;
   strategyExecuted: boolean; autopilot: boolean; modelLabel: string;
-  round: number; tradingTimeLeft: number;
   onExecute: () => { executed: number; failed: number; skipped: number; details: string[] };
   onExecuteAdjustment: (index: number) => { executed: number; failed: number; skipped: number; details: string[] };
   onToggleAutopilot: () => void;
@@ -574,7 +572,7 @@ function getAgentAbbrev(name: string): string {
   return name.split(/\s+/).map(w => w[0]?.toUpperCase() || "").join("").slice(0, 3);
 }
 
-function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: ArenaChatMessage[]; onSendMessage: (content: string) => void; round: number; npcNames: string[] }) {
+function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: ArenaChatMessage[]; onSendMessage: (content: string) => void; npcNames: string[] }) {
   const [input, setInput] = useState("");
   const [tradeLogCollapsed, setTradeLogCollapsed] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -593,10 +591,6 @@ function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: Arena
 
   const handleSend = () => { const msg = input.trim(); if (!msg) return; setInput(""); onSendMessage(msg); };
 
-  // Track round separators for chat
-  let lastChatRound = 0;
-  let lastTradeRound = 0;
-
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* ARENA CHAT — 80% (the star) */}
@@ -607,16 +601,16 @@ function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: Arena
         <div className="flex-1 overflow-y-auto px-3 py-1.5 space-y-0.5 min-h-0">
           {chatMessages.length === 0 && <span className="text-xs text-neutral-600">Waiting for action...</span>}
           {chatMessages.map((m) => {
+            // Event separators for news events
             let separator = null;
-            if (m.isSystem && m.systemType === "system" && m.message.includes("Trading is open")) {
-              const roundMatch = m.message.match(/Round (\d+)/);
-              const msgRound = roundMatch ? parseInt(roundMatch[1]) : 0;
-              if (msgRound > lastChatRound) {
-                lastChatRound = msgRound;
+            if (m.isSystem && m.systemType === "news" && m.message.includes("[Event")) {
+              const evtMatch = m.message.match(/\[Event (\d+)\]/);
+              if (evtMatch) {
+                const evtNum = parseInt(evtMatch[1]);
                 separator = (
-                  <div key={`csep-${msgRound}`} className="flex items-center gap-2 py-1.5 my-1">
+                  <div key={`esep-${evtNum}`} className="flex items-center gap-2 py-1.5 my-1">
                     <div className="flex-1 h-px bg-neutral-700/50" />
-                    <span className="text-[9px] font-bold text-neutral-600 uppercase tracking-wider">Round {msgRound}</span>
+                    <span className="text-[9px] font-bold text-neutral-600 uppercase tracking-wider">Event {evtNum}</span>
                     <div className="flex-1 h-px bg-neutral-700/50" />
                   </div>
                 );
@@ -672,33 +666,11 @@ function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: Arena
           <div className="flex-1 overflow-y-auto px-3 py-0.5 min-h-0">
             {tradeMessages.length === 0 && <span className="text-[9px] text-neutral-700">No trades yet</span>}
             {tradeMessages.map((m) => {
-              let separator = null;
-              const msgIdx = messages.indexOf(m);
-              for (let i = msgIdx - 1; i >= 0; i--) {
-                const prev = messages[i];
-                if (prev.isSystem && prev.systemType === "system" && prev.message.includes("Trading is open")) {
-                  const roundMatch = prev.message.match(/Round (\d+)/);
-                  const msgRound = roundMatch ? parseInt(roundMatch[1]) : 0;
-                  if (msgRound > lastTradeRound) {
-                    lastTradeRound = msgRound;
-                    separator = (
-                      <div key={`tsep-${msgRound}`} className="flex items-center gap-1 py-0.5">
-                        <div className="flex-1 h-px bg-neutral-800/50" />
-                        <span className="text-[7px] font-bold text-neutral-700 uppercase">R{msgRound}</span>
-                        <div className="flex-1 h-px bg-neutral-800/50" />
-                      </div>
-                    );
-                  }
-                  break;
-                }
-              }
-
               // Compact one-line format: "MT: LONG 100 NVDA @ $196"
               const abbrev = getAgentAbbrev(m.agentName);
               const isUser = m.systemType === "user_trade";
               return (
                 <div key={m.id}>
-                  {separator}
                   <div className="text-[11px] leading-tight text-neutral-600 font-[family-name:var(--font-geist-mono)] truncate">
                     <span className={isUser ? "text-amber-500/60" : "text-neutral-500"}>{isUser ? "YOU" : abbrev}</span>
                     <span className="text-neutral-700">: </span>
@@ -716,103 +688,7 @@ function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: Arena
 }
 
 // ============================================================
-// Overlays
-// ============================================================
-
-function NewsFlashOverlay({ round, countdown, headline, stocks }: {
-  round: number; countdown: number; headline: string | null; stocks?: BattleStock[];
-}) {
-  return (
-    <div className="fixed inset-0 z-40">
-      {/* Dimmed stock cards in background */}
-      {stocks && stocks.length > 0 && (
-        <div className="absolute inset-0 p-4 pt-16 overflow-hidden opacity-20 blur-[1px] pointer-events-none">
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-2.5 max-w-4xl mx-auto">
-            {stocks.map((stock) => {
-              const colors = SECTOR_COLORS[stock.sector] ?? SECTOR_COLORS.tech;
-              const changePct = ((stock.price - stock.startPrice) / stock.startPrice) * 100;
-              const positive = changePct >= 0;
-              return (
-                <div key={stock.ticker} className={`rounded-xl border ${colors.border} bg-neutral-900 p-3`}>
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <span className="font-[family-name:var(--font-geist-mono)] text-sm font-bold text-neutral-100">{stock.ticker}</span>
-                    <span className={`text-[8px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${colors.badge}`}>
-                      {SECTOR_LABEL[stock.sector] ?? stock.sector}
-                    </span>
-                  </div>
-                  <p className="text-lg font-bold text-neutral-200 truncate mb-1">{stock.name}</p>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-xl font-bold font-[family-name:var(--font-geist-mono)] text-neutral-100">${stock.price.toFixed(2)}</span>
-                    <span className={`text-xs font-[family-name:var(--font-geist-mono)] font-medium ${positive ? "text-green-400" : "text-red-400"}`}>
-                      {positive ? "\u25B2" : "\u25BC"} {positive ? "+" : ""}{changePct.toFixed(2)}%
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      {/* Overlay content */}
-      <div className="absolute inset-0 flex items-center justify-center bg-black/60">
-        <div className="max-w-xl w-full mx-4 text-center space-y-6">
-          {headline ? (
-            <div className="space-y-4">
-              <div className="text-xs uppercase tracking-[0.3em] text-red-500 font-bold animate-pulse">Breaking News</div>
-              <h2 className="text-xl font-bold text-neutral-100 leading-relaxed px-4">{headline}</h2>
-            </div>
-          ) : (
-            <div><p className="text-neutral-400 text-lg">{round === 1 ? "Battle begins soon" : `Round ${round} starting`}</p></div>
-          )}
-          <div className="space-y-2">
-            <p className="text-neutral-500 text-sm">Trading opens in</p>
-            <div className="text-7xl font-bold font-[family-name:var(--font-geist-mono)] text-amber-500">{countdown}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RoundSummaryOverlay({ round, standings, roundPnl, roundTradeCount }: {
-  round: number; standings: StandingEntry[]; roundPnl: number; roundTradeCount: number;
-}) {
-  return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl">
-        <h2 className="text-lg font-bold text-center mb-1">Round {round} Complete</h2>
-        <p className="text-xs text-neutral-500 text-center mb-4">{round < TOTAL_ROUNDS ? "Next round starting soon..." : "Final round complete!"}</p>
-        <div className="grid grid-cols-2 gap-3 mb-4">
-          <div className="rounded-lg bg-neutral-800/50 p-3 text-center">
-            <div className="text-[10px] uppercase tracking-wider text-neutral-500 mb-1">Trades</div>
-            <div className="text-lg font-bold text-neutral-100">{roundTradeCount}</div>
-          </div>
-          <div className="rounded-lg bg-neutral-800/50 p-3 text-center">
-            <div className="text-[10px] uppercase tracking-wider text-neutral-500 mb-1">Round P&L</div>
-            <div className={`text-lg font-bold font-[family-name:var(--font-geist-mono)] ${roundPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-              {roundPnl >= 0 ? "+" : ""}{formatCurrency(roundPnl)}</div>
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          {standings.map((s, i) => (
-            <div key={s.name} className={`flex items-center justify-between px-3 py-1.5 rounded-lg ${
-              s.isUser ? "bg-amber-500/5 border border-amber-500/20" : "bg-neutral-800/50"
-            }`}>
-              <div className="flex items-center gap-2">
-                <span className="text-neutral-500 text-xs font-[family-name:var(--font-geist-mono)] w-4">{i + 1}</span>
-                <span className={`text-sm font-medium ${s.isUser ? "text-amber-500" : "text-neutral-300"}`}>{s.name}</span>
-              </div>
-              <span className={`text-sm font-[family-name:var(--font-geist-mono)] font-medium ${s.pnlPct >= 0 ? "text-green-400" : "text-red-400"}`}>{formatPct(s.pnlPct)}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ============================================================
-// PART 6: Match Retro — renamed tabs, trading analysis with results
+// Match Retro — renamed tabs, trading analysis with results
 // ============================================================
 
 function MatchRetroScreen({ retroRounds, standings, roundSnapshots, onContinue }: {
@@ -826,7 +702,7 @@ function MatchRetroScreen({ retroRounds, standings, roundSnapshots, onContinue }
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold">Match Retrospective</h1>
-            <p className="text-sm text-neutral-500 mt-1">Analysis of {TOTAL_ROUNDS} rounds</p>
+            <p className="text-sm text-neutral-500 mt-1">Analysis of {EVENTS_PER_MATCH} events</p>
           </div>
           <button onClick={onContinue}
             className="px-5 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-amber-500 to-amber-600 text-black hover:from-amber-400 hover:to-amber-500 transition-all">
@@ -852,10 +728,7 @@ function MatchRetroScreen({ retroRounds, standings, roundSnapshots, onContinue }
                   <th className="px-4 py-2 font-medium">Agent</th>
                   <th className="px-3 py-2 font-medium">Model</th>
                   <th className="px-3 py-2 font-medium">Strategy</th>
-                  {Array.from({ length: TOTAL_ROUNDS }, (_, i) => (
-                    <th key={i} className="px-3 py-2 font-medium text-right">R{i + 1}</th>
-                  ))}
-                  <th className="px-3 py-2 font-medium text-right">Total</th>
+                  <th className="px-3 py-2 font-medium text-right">Total P&L</th>
                   <th className="px-3 py-2 font-medium text-right">Rank</th>
                 </tr></thead>
                 <tbody>
@@ -864,15 +737,6 @@ function MatchRetroScreen({ retroRounds, standings, roundSnapshots, onContinue }
                       <td className="px-4 py-2 font-medium text-neutral-200">{s.name}</td>
                       <td className="px-3 py-2 text-neutral-500">{getModelLabel(s.model)}</td>
                       <td className="px-3 py-2 text-neutral-500">{s.strategy}</td>
-                      {Array.from({ length: TOTAL_ROUNDS }, (_, i) => {
-                        const rd = retroRounds.find(r => r.round === i + 1);
-                        const pnl = rd?.agentPnls.find((p) => p.name === s.name)?.roundPnl ?? 0;
-                        return (
-                          <td key={i} className={`px-3 py-2 text-right font-[family-name:var(--font-geist-mono)] ${rd ? (pnl >= 0 ? "text-green-400" : "text-red-400") : "text-neutral-700"}`}>
-                            {rd ? `${pnl >= 0 ? "+" : ""}${formatCurrency(pnl)}` : "-"}
-                          </td>
-                        );
-                      })}
                       <td className={`px-3 py-2 text-right font-[family-name:var(--font-geist-mono)] font-semibold ${s.pnlPct >= 0 ? "text-green-400" : "text-red-400"}`}>
                         {formatPct(s.pnlPct)}
                       </td>
@@ -885,15 +749,15 @@ function MatchRetroScreen({ retroRounds, standings, roundSnapshots, onContinue }
           </div>
         )}
 
-        {/* PART 7: Trading Analysis — grouped by ROUND, all news + agent actions per round */}
+        {/* Trading Analysis — all news events + agent actions */}
         {activeTab === "analysis" && (
           <div className="space-y-6">
             {retroRounds.map((rd) => (
               <div key={rd.round} className="rounded-xl border border-neutral-800 bg-neutral-900/50 overflow-hidden">
-                {/* Round header with stock performance */}
+                {/* Match header with stock performance */}
                 <div className="px-5 py-3 border-b border-neutral-800 bg-neutral-800/30">
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-bold text-neutral-200">Round {rd.round}</h3>
+                    <h3 className="text-sm font-bold text-neutral-200">Match Summary</h3>
                     <div className="flex gap-1.5">
                       {rd.stockPrices.map(sp => (
                         <span key={sp.ticker} className={`text-[9px] font-semibold px-1.5 py-0.5 rounded font-[family-name:var(--font-geist-mono)] ${
@@ -1031,7 +895,7 @@ function ResultsScreen({ standings, bestTrade, worstTrade, onPlayAgain, onReconf
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm overflow-y-auto">
       <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-8 max-w-lg w-full mx-4 my-8 shadow-2xl">
         <h2 className="text-2xl font-bold text-center mb-1">Match Complete</h2>
-        <p className="text-sm text-neutral-400 text-center mb-2">{TOTAL_ROUNDS} rounds</p>
+        <p className="text-sm text-neutral-400 text-center mb-2">{EVENTS_PER_MATCH} events</p>
         {winner && (
           <div className={`text-center mb-6 p-4 rounded-xl ${winner.isUser ? "bg-amber-500/10 border border-amber-500/30" : ""}`}>
             <div className="text-4xl mb-1">{MEDALS[0]}</div>
@@ -1233,7 +1097,7 @@ function BattleContent() {
 
   return (
     <div className="h-[calc(100vh-2rem)] flex flex-col overflow-hidden bg-[#0a0a0a] relative">
-      <TopBar round={battle.round} phase={battle.phase} countdown={battle.countdown} tradingTimeLeft={battle.tradingTimeLeft}
+      <TopBar phase={battle.phase} tradingTimeLeft={battle.tradingTimeLeft} currentEvent={battle.currentEvent}
         userCash={battle.userPortfolio.cash} openPnl={battle.openPnl} userTotalValue={battle.userTotalValue} onExit={handleExit} />
 
       {/* PART 3: News Banner — persistent macro + company */}
@@ -1257,7 +1121,6 @@ function BattleContent() {
             strategy={battle.agentStrategy} adjustments={battle.agentAdjustments}
             loading={battle.strategyLoading} strategyExecuted={battle.strategyExecuted}
             autopilot={battle.autopilot} modelLabel={userModelLabel}
-            round={battle.round} tradingTimeLeft={battle.tradingTimeLeft}
             onExecute={battle.executeStrategy} onExecuteAdjustment={battle.executeAdjustment}
             onToggleAutopilot={() => battle.setAutopilot(!battle.autopilot)}
             chatMessages={battle.chatMessages} chatLoading={battle.chatLoading}
@@ -1269,22 +1132,12 @@ function BattleContent() {
         {/* Right sidebar */}
         <div className="w-72 flex flex-col min-h-0 overflow-hidden bg-neutral-900 border-l border-neutral-800">
           <LeaderboardPanel standings={battle.standings} />
-          <ArenaChatPanel messages={battle.arenaMessages} onSendMessage={battle.sendArenaMessage} round={battle.round}
+          <ArenaChatPanel messages={battle.arenaMessages} onSendMessage={battle.sendArenaMessage}
             npcNames={npcConfigs.map(c => c.name || `NPC ${c.index + 1}`)} />
         </div>
       </div>
 
       {/* Overlays */}
-      {battle.phase === "pre_round" && battle.countdown > 0 && (
-        <NewsFlashOverlay round={battle.round} countdown={battle.countdown}
-          headline={battle.roundNewsEvents[0]?.headline ?? null} stocks={battle.stocks} />
-      )}
-
-      {battle.phase === "round_end" && (
-        <RoundSummaryOverlay round={battle.round} standings={battle.standings}
-          roundPnl={battle.roundPnl} roundTradeCount={battle.roundTradeCount} />
-      )}
-
       {battle.phase === "match_retro" && (
         <MatchRetroScreen retroRounds={battle.retroRounds} standings={battle.standings} roundSnapshots={battle.roundSnapshots} onContinue={battle.dismissRetro} />
       )}
