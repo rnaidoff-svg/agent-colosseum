@@ -440,10 +440,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // If still no changes, try one more fallback: look for agent_id mentions in any JSON-like structure
+    // If still no changes, try more fallback patterns
     if (proposedChanges.length === 0) {
       console.log(`[DEBUG STEP 4] WARNING: No changes parsed from Lieutenant. Trying additional fallback patterns...`);
-      // Try to find any JSON objects with new_prompt
+      // Try to find any JSON objects with new_prompt (simple objects without nested braces)
       const jsonObjects = ltResult.content.match(/\{[^{}]*"(?:new_prompt|newPrompt)"[^{}]*\}/g);
       if (jsonObjects) {
         for (const jsonStr of jsonObjects) {
@@ -468,9 +468,71 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Fallback 4: Try parseAIResponse without requiredKey (handles cases where "changes" wrapper is missing)
+    if (proposedChanges.length === 0) {
+      console.log(`[DEBUG STEP 4] Trying fallback: parseAIResponse without requiredKey...`);
+      const anyJson = parseAIResponse(ltResult.content);
+      if (anyJson && typeof anyJson === "object") {
+        // Case A: Single change object at top level
+        const agentId = anyJson.agent_id || anyJson.agentId;
+        const newPrompt = anyJson.new_prompt || anyJson.newPrompt;
+        if (agentId && newPrompt) {
+          proposedChanges.push({
+            agent_id: agentId,
+            agent_name: anyJson.agent_name || anyJson.agentName || agentId,
+            what_changed: anyJson.what_changed || anyJson.whatChanged || "Updated",
+            new_prompt: newPrompt,
+          });
+          parseMethod = "single JSON object (no changes wrapper)";
+        }
+        // Case B: Array of changes without "changes" key
+        if (Array.isArray(anyJson)) {
+          for (const item of anyJson) {
+            const id = item?.agent_id || item?.agentId;
+            const prompt = item?.new_prompt || item?.newPrompt;
+            if (id && prompt) {
+              proposedChanges.push({
+                agent_id: id,
+                agent_name: item.agent_name || item.agentName || id,
+                what_changed: item.what_changed || item.whatChanged || "Updated",
+                new_prompt: prompt,
+              });
+            }
+          }
+          if (proposedChanges.length > 0) parseMethod = "JSON array (no changes wrapper)";
+        }
+        // Case C: Object has a key that's an array of change-like objects (e.g. "updates", "modifications")
+        if (proposedChanges.length === 0) {
+          for (const key of Object.keys(anyJson)) {
+            if (Array.isArray(anyJson[key])) {
+              for (const item of anyJson[key]) {
+                const id = item?.agent_id || item?.agentId;
+                const prompt = item?.new_prompt || item?.newPrompt;
+                if (id && prompt) {
+                  proposedChanges.push({
+                    agent_id: id,
+                    agent_name: item.agent_name || item.agentName || id,
+                    what_changed: item.what_changed || item.whatChanged || "Updated",
+                    new_prompt: prompt,
+                  });
+                }
+              }
+              if (proposedChanges.length > 0) {
+                parseMethod = `JSON with "${key}" key (non-standard wrapper)`;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (proposedChanges.length > 0) {
+        console.log(`[DEBUG STEP 4] Parsed ${proposedChanges.length} changes via ${parseMethod}`);
+      }
+    }
+
     if (proposedChanges.length === 0) {
       console.log(`[DEBUG STEP 4] WARNING: Could not parse any soldier changes from Lieutenant's response`);
-      console.log(`[DEBUG STEP 4] Lieutenant response preview: ${ltResult.content.slice(0, 300)}`);
+      console.log(`[DEBUG STEP 4] Lieutenant response preview: ${ltResult.content.slice(0, 500)}`);
     }
     proposedChanges.forEach((c, i) => {
       console.log(`[DEBUG STEP 4] Change ${i + 1}: ${c.agent_id} (${c.agent_name}) — ${c.what_changed} — prompt: ${c.new_prompt.length} chars`);

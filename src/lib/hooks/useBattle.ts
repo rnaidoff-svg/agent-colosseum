@@ -952,6 +952,43 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     return null;
   }, []);
 
+  // -- Call Market Engine AI to determine stock price impacts for a news event --
+  const callMarketEngine = useCallback(async (
+    headline: string,
+    stocks: BattleStock[],
+    sectorImpacts: Record<string, number>
+  ): Promise<Record<string, number> | null> => {
+    try {
+      const res = await fetch("/api/market-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newsHeadline: headline,
+          stocks: stocks.map(s => ({
+            ticker: s.ticker, name: s.name, sector: s.sector,
+            beta: s.beta, price: s.price, startPrice: s.startPrice,
+            changePct: (s.price - s.startPrice) / s.startPrice,
+          })),
+          sectorImpacts,
+        }),
+      });
+      const data = await res.json();
+      if (data.targets) {
+        // Market Engine returns decimals (0.05 = +5%), convert to percentages for per_stock_impacts
+        const impacts: Record<string, number> = {};
+        for (const [ticker, value] of Object.entries(data.targets)) {
+          impacts[ticker] = (value as number) * 100;
+        }
+        console.log(`[market-engine] AI price impacts: ${Object.entries(impacts).map(([t, v]) => `${t} ${v >= 0 ? "+" : ""}${v.toFixed(1)}%`).join(", ")}`);
+        return impacts;
+      }
+      console.log("[market-engine] No targets returned, using news agent fallback");
+    } catch (err) {
+      console.error("[market-engine] API error, using news agent fallback:", err);
+    }
+    return null;
+  }, []);
+
   // -- Fire mid-round news event — try AI company news agent first, fallback to hardcoded --
   const fireMidRoundNews = useCallback((isCompany: boolean) => {
     if (!isCompany) return;
@@ -971,6 +1008,12 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           target_ticker: aiResult.tickerAffected,
           per_stock_impacts: aiResult.per_stock_impacts,
         };
+        // Call Market Engine AI to determine price impacts
+        const meTargets = await callMarketEngine(event.headline, stocksRef.current, event.sectorImpacts);
+        if (meTargets) {
+          console.log(`[market-engine] Overriding company news per_stock_impacts with Market Engine AI`);
+          event.per_stock_impacts = meTargets;
+        }
         applyMidRoundEvent(event);
         return;
       }
@@ -980,9 +1023,15 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       const result = generateCompanyNews(stocksRef.current, usedCompanyTickersRef.current, roundRef.current);
       if (!result) return;
       usedCompanyTickersRef.current = [...usedCompanyTickersRef.current, result.tickerAffected];
+      // Call Market Engine AI even for fallback events
+      const meTargets = await callMarketEngine(result.event.headline, stocksRef.current, result.event.sectorImpacts);
+      if (meTargets) {
+        console.log(`[market-engine] Overriding fallback news per_stock_impacts with Market Engine AI`);
+        result.event.per_stock_impacts = meTargets;
+      }
       applyMidRoundEvent(result.event);
     })();
-  }, [applyMidRoundEvent, fetchCompanyNewsFromRegistry]);
+  }, [applyMidRoundEvent, callMarketEngine, fetchCompanyNewsFromRegistry]);
 
   // -- User trade execution (manual) --
   // Manual trade: user clicks LONG/SHORT/CLOSE on stock card — uses same executeOneTrade
@@ -1333,41 +1382,54 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     if (phase !== "trading") return;
 
     // Apply macro news to prices at trading open (prices were frozen during countdown)
+    // Call Market Engine AI to determine price impacts, then apply
     const macroEvents = roundNewsEventsRef.current;
     if (macroEvents.length > 0) {
       const macroEvent = macroEvents[0];
 
-      // PART 6: Capture before prices for logging
-      const beforePrices: Record<string, number> = {};
-      for (const s of stocksRef.current) { beforePrices[s.ticker] = s.price; }
+      // Call Market Engine AI, then apply prices (whether ME succeeds or falls back to news agent impacts)
+      callMarketEngine(macroEvent.headline, stocksRef.current, macroEvent.sectorImpacts).then(meTargets => {
+        if (meTargets) {
+          console.log(`[market-engine] Overriding macro news per_stock_impacts with Market Engine AI`);
+          macroEvent.per_stock_impacts = meTargets;
+          roundNewsEventsRef.current = [macroEvent];
+          setRoundNewsEvents([macroEvent]);
+        }
 
-      const { stocks: updatedStocks } = applyNewsToPrice(stocksRef.current, macroEvent);
-      stocksRef.current = updatedStocks;
-      setStocks(updatedStocks);
-      setIndexValue(computeIndex(updatedStocks));
+        // PART 6: Capture before prices for logging
+        const beforePrices: Record<string, number> = {};
+        for (const s of stocksRef.current) { beforePrices[s.ticker] = s.price; }
 
-      // PART 6: Console price verification for macro at trading open
-      console.log(`=== R${roundRef.current} MACRO (trading open): '${macroEvent.headline}' ===`);
-      for (const s of updatedStocks) {
-        const before = beforePrices[s.ticker] ?? s.startPrice;
-        const actualPct = ((s.price - before) / before) * 100;
-        const perStock = macroEvent.per_stock_impacts;
-        const intended = perStock?.[s.ticker];
-        const intendedPct = intended != null ? intended * (Math.abs(intended) > 1 ? 1 : 100) : null;
-        const match = intendedPct != null ? (Math.abs(actualPct - intendedPct) < 0.5 ? "\u2713" : "\u26A0") : "?";
-        console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}`);
-      }
+        const { stocks: updatedStocks } = applyNewsToPrice(stocksRef.current, macroEvent);
+        stocksRef.current = updatedStocks;
+        setStocks(updatedStocks);
+        setIndexValue(computeIndex(updatedStocks));
 
-      // Capture snapshot with correct before/after prices (moved from pre_round)
-      const afterPrices: Record<string, number> = {};
-      for (const s of updatedStocks) { afterPrices[s.ticker] = s.price; }
-      captureSnapshotEvent(macroEvent, beforePrices, afterPrices);
-    }
+        // PART 6: Console price verification for macro at trading open
+        console.log(`=== R${roundRef.current} MACRO (trading open): '${macroEvent.headline}' ===`);
+        for (const s of updatedStocks) {
+          const before = beforePrices[s.ticker] ?? s.startPrice;
+          const actualPct = ((s.price - before) / before) * 100;
+          const perStock = macroEvent.per_stock_impacts;
+          const intended = perStock?.[s.ticker];
+          const intendedPct = intended != null ? intended * (Math.abs(intended) > 1 ? 1 : 100) : null;
+          const match = intendedPct != null ? (Math.abs(actualPct - intendedPct) < 0.5 ? "\u2713" : "\u26A0") : "?";
+          console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}`);
+        }
 
-    fetchAgentStrategy(false);
+        // Capture snapshot with correct before/after prices (moved from pre_round)
+        const afterPrices: Record<string, number> = {};
+        for (const s of updatedStocks) { afterPrices[s.ticker] = s.price; }
+        captureSnapshotEvent(macroEvent, beforePrices, afterPrices);
 
-    if (roundNewsEventsRef.current.length > 0) {
-      setTimeout(() => fireArenaChats(roundNewsEventsRef.current[0].headline), 3000);
+        fetchAgentStrategy(false);
+
+        if (roundNewsEventsRef.current.length > 0) {
+          setTimeout(() => fireArenaChats(roundNewsEventsRef.current[0].headline), 3000);
+        }
+      });
+    } else {
+      fetchAgentStrategy(false);
     }
 
     const npcList = npcsRef.current;
