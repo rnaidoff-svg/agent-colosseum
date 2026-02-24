@@ -57,7 +57,7 @@ async function callOpenRouter(
   messages: { role: string; content: string }[],
   maxTokens: number,
   temperature: number
-): Promise<{ content: string | null; usedModel: string; error?: string }> {
+): Promise<{ content: string | null; usedModel: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; error?: string }> {
   const doCall = async (m: string) => {
     return fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -87,14 +87,14 @@ async function callOpenRouter(
         return { content: null, usedModel: FALLBACK_MODEL, error: `${model} failed, fallback also failed` };
       }
       const data = await res.json();
-      return { content: data.choices?.[0]?.message?.content ?? null, usedModel: FALLBACK_MODEL };
+      return { content: data.choices?.[0]?.message?.content ?? null, usedModel: FALLBACK_MODEL, usage: data.usage };
     }
 
     return { content: null, usedModel: model, error: errText };
   }
 
   const data = await res.json();
-  return { content: data.choices?.[0]?.message?.content ?? null, usedModel: model };
+  return { content: data.choices?.[0]?.message?.content ?? null, usedModel: model, usage: data.usage };
 }
 
 /**
@@ -284,13 +284,14 @@ Rules:
             content,
             reasoning: parsed.reasoning || content,
             trades: validTrades,
+            usage: result.usage,
           });
         }
       } catch {
         // Parse failed
       }
 
-      return NextResponse.json({ content, reasoning: content, trades: [] });
+      return NextResponse.json({ content, reasoning: content, trades: [], usage: result.usage });
     }
 
     // Full strategy request
@@ -369,13 +370,14 @@ Rules:
           trades: validTrades,
           cashReserve: typeof parsed.cashReserve === "number" ? parsed.cashReserve : 0,
           summary: parsed.summary || "",
+          usage: result.usage,
         });
       }
     } catch {
       // Parse failed
     }
 
-    return NextResponse.json({ content });
+    return NextResponse.json({ content, usage: result.usage });
   } catch (error) {
     console.error("Chat API error:", error);
     return NextResponse.json({ content: "An error occurred. Please try again." });

@@ -42,6 +42,15 @@ import {
 } from "../battle/engine";
 import { getModelLabel } from "../utils/format";
 
+// ------ NPC trade flash type ------
+
+export interface RecentNpcTrade {
+  npcId: string;
+  npcName: string;
+  trade: TradeInfo;
+  timestamp: number;
+}
+
 // ------ Phase type ------
 
 export type BattlePhase = "pre_round" | "trading" | "round_end" | "match_retro" | "results";
@@ -159,6 +168,26 @@ export function useBattle(
 
   // -- Trade tracking --
   const [userTrades, setUserTrades] = useState<TradeInfo[]>([]);
+
+  // -- NPC trade flash (for ParticipantsPanel) --
+  const [recentNpcTrades, setRecentNpcTrades] = useState<Record<string, RecentNpcTrade>>({});
+
+  // -- Token usage tracking --
+  const [tokenUsage, setTokenUsage] = useState<Record<string, {
+    name: string; type: "trading" | "market"; tokens: number; calls: number;
+  }>>({});
+
+  const addTokens = useCallback((agentId: string, name: string, type: "trading" | "market", tokens: number) => {
+    if (!tokens || tokens <= 0) return;
+    setTokenUsage(prev => ({
+      ...prev,
+      [agentId]: {
+        name, type,
+        tokens: (prev[agentId]?.tokens || 0) + tokens,
+        calls: (prev[agentId]?.calls || 0) + 1,
+      }
+    }));
+  }, []);
 
   // -- NPC scheduling (multi-trade) --
   const npcScheduleRef = useRef<Record<string, number[]>>({});
@@ -775,7 +804,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       });
       const data = await res.json();
       if (data.trades && data.trades.length > 0) {
-        return { trades: data.trades as NpcTradeDecision[], reasoning: data.reasoning || "" };
+        return { trades: data.trades as NpcTradeDecision[], reasoning: data.reasoning || "", usage: data.usage };
       }
     } catch (err) {
       console.error(`NPC trade fetch error for ${npc.name}:`, err);
@@ -814,6 +843,22 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
             isUser: false, isSystem: true, systemType: "npc_trade" as const,
           }]);
         }
+        // Record recent trade for flash display
+        const lastTrade = executedTrades[executedTrades.length - 1];
+        const now = Date.now();
+        setRecentNpcTrades(prev => ({ ...prev, [npcId]: { npcId, npcName: npc.name, trade: lastTrade, timestamp: now } }));
+        setTimeout(() => {
+          setRecentNpcTrades(prev => {
+            const entry = prev[npcId];
+            if (entry && entry.timestamp === now) { const next = { ...prev }; delete next[npcId]; return next; }
+            return prev;
+          });
+        }, 5000);
+        // Token tracking
+        const tokenKey = npc.strategy.toLowerCase().replace(/\s+/g, "_");
+        if (apiResult.usage?.total_tokens) {
+          addTokens(tokenKey, npc.name, "trading", apiResult.usage.total_tokens);
+        }
         return;
       }
     }
@@ -838,9 +883,19 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           message: `${actionLabel} ${fallbackTrade.qty} shares ${fallbackTrade.ticker} @ $${fallbackTrade.price.toFixed(2)}`,
           isUser: false, isSystem: true, systemType: "npc_trade" as const,
         }]);
+        // Record recent trade for flash display
+        const now = Date.now();
+        setRecentNpcTrades(prev => ({ ...prev, [npcId]: { npcId, npcName: npc.name, trade: fallbackTrade, timestamp: now } }));
+        setTimeout(() => {
+          setRecentNpcTrades(prev => {
+            const entry = prev[npcId];
+            if (entry && entry.timestamp === now) { const next = { ...prev }; delete next[npcId]; return next; }
+            return prev;
+          });
+        }, 5000);
       }
     }
-  }, [fetchNpcTrade, recordTrade, recordDecision]);
+  }, [fetchNpcTrade, recordTrade, recordDecision, addTokens]);
 
   // -- Arena chat ref --
   const fireArenaChatRef = useRef<((headline: string) => void) | null>(null);
@@ -1085,12 +1140,16 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       });
       const data = await res.json();
       setChatMessages((prev) => [...prev, { role: "assistant", content: data.content }]);
+      // Token tracking for user agent
+      if (data.usage?.total_tokens) {
+        addTokens("user_agent", userName, "trading", data.usage.total_tokens);
+      }
     } catch {
       setChatMessages((prev) => [...prev, { role: "assistant", content: "Sorry, couldn't connect. Try again." }]);
     } finally {
       setChatLoading(false);
     }
-  }, [chatMessages, userModelId, userSystemPrompt]);
+  }, [chatMessages, userModelId, userSystemPrompt, addTokens, userName]);
 
   // -- Arena chat helpers --
   const addArenaMessage = useCallback((agentName: string, agentModel: string, message: string, isUser: boolean) => {
@@ -1123,10 +1182,15 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       if (data.message) {
         addArenaMessage(agent.name, agent.model, data.message, isUser);
       }
+      // Token tracking for arena chat
+      if (data.usage?.total_tokens) {
+        const tokenKey = agent.strategy.toLowerCase().replace(/\s+/g, "_");
+        addTokens(tokenKey, agent.name, "trading", data.usage.total_tokens);
+      }
     } catch (err) {
       console.error(`Arena chat error for ${agent.name}:`, err);
     }
-  }, [addArenaMessage]);
+  }, [addArenaMessage, addTokens]);
 
   const fireArenaChats = useCallback((headline: string) => {
     const npcList = npcsRef.current;
@@ -1642,6 +1706,9 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     // Arena chat (merged with events)
     arenaMessages,
     sendArenaMessage,
+    // NPC trade flashes + token usage
+    recentNpcTrades,
+    tokenUsage,
     // Retro
     retroRounds,
     roundSnapshots,

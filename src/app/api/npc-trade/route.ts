@@ -55,7 +55,7 @@ async function callOpenRouter(
   messages: { role: string; content: string }[],
   maxTokens: number,
   temperature: number
-): Promise<{ content: string | null; error?: string }> {
+): Promise<{ content: string | null; usage?: unknown; error?: string }> {
   const doCall = async (m: string) => {
     return fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -85,14 +85,14 @@ async function callOpenRouter(
         return { content: null, error: "Both models failed" };
       }
       const data = await res.json();
-      return { content: data.choices?.[0]?.message?.content ?? null };
+      return { content: data.choices?.[0]?.message?.content ?? null, usage: data.usage };
     }
 
     return { content: null, error: errText };
   }
 
   const data = await res.json();
-  return { content: data.choices?.[0]?.message?.content ?? null };
+  return { content: data.choices?.[0]?.message?.content ?? null, usage: data.usage };
 }
 
 export async function POST(request: NextRequest) {
@@ -205,6 +205,7 @@ Rules:
     }
 
     const content = result.content;
+    const usage = result.usage;
 
     try {
       const parsed = parseAIResponse(content, { requiredKey: "trades" });
@@ -232,6 +233,7 @@ Rules:
           return NextResponse.json({
             trades: validTrades,
             reasoning: parsed.reasoning || "Executing strategy",
+            usage,
           });
         }
       }

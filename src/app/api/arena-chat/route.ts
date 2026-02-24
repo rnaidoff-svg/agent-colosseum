@@ -134,11 +134,12 @@ Write a single short message (1-2 sentences max) reacting to the news or trash-t
 
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content?.trim();
+    const usage = data.usage;
 
     if (content && content.length > 0 && content.length < 300) {
       // Strip any quotes wrapping the message
       const cleaned = content.replace(/^["']|["']$/g, "");
-      return NextResponse.json({ message: cleaned });
+      return NextResponse.json({ message: cleaned, usage });
     }
 
     return NextResponse.json({ message: getFallback(agent.strategy) });

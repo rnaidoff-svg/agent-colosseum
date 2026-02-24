@@ -4,11 +4,12 @@ import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { StockProfile } from "@/lib/engine/stocks";
 import { generateMatchStocks } from "@/lib/engine/stocks";
-import { useBattle, type BattlePhase, type RoundRetroData, type RoundSnapshot } from "@/lib/hooks/useBattle";
+import { useBattle, type BattlePhase, type RoundRetroData, type RoundSnapshot, type RecentNpcTrade } from "@/lib/hooks/useBattle";
 import {
   type BattleStock,
   type Portfolio,
   type PortfolioPosition,
+  type NpcAgent,
   type AgentStrategyRec,
   type AgentAdjustment,
   type ArenaChatMessage,
@@ -18,9 +19,10 @@ import {
   TOTAL_ROUNDS,
   STARTING_CASH,
   computeStockImpacts,
+  computeTotalValue,
 } from "@/lib/battle/engine";
 import { STRATEGY_TEMPLATES } from "@/lib/constants/strategyTemplates";
-import { formatCurrency, formatPct, getModelLabel } from "@/lib/utils/format";
+import { formatCurrency, formatCompactCurrency, formatPct, getModelLabel } from "@/lib/utils/format";
 import type { NewsEvent } from "@/lib/engine/types";
 
 // (scroll helpers moved inline — using scrollIntoView pattern)
@@ -296,96 +298,152 @@ function StockCard({
   );
 }
 
+
 // ============================================================
-// Positions Table
+// NPC Position Card — compact card for one participant
 // ============================================================
 
-function PositionsTable({ portfolio, stocks }: { portfolio: Portfolio; stocks: BattleStock[] }) {
+function NpcPositionCard({ name, model, portfolio, stocks, isUser, recentTrade }: {
+  name: string; model: string; portfolio: Portfolio; stocks: BattleStock[];
+  isUser?: boolean; recentTrade?: RecentNpcTrade;
+}) {
+  const totalValue = computeTotalValue(portfolio, stocks);
+  const pnl = totalValue - STARTING_CASH;
+  const pnlPct = (pnl / STARTING_CASH) * 100;
   const positions = Object.entries(portfolio.positions);
-  if (positions.length === 0) return null;
-
-  let totalMktVal = 0; let totalPnl = 0; let totalCost = 0;
-  const rows = positions.map(([ticker, pos]) => {
-    const stock = stocks.find((s) => s.ticker === ticker);
-    if (!stock) return null;
-    const mktVal = pos.qty * stock.price;
-    const pnl = pos.side === "long" ? (stock.price - pos.avgCost) * pos.qty : (pos.avgCost - stock.price) * pos.qty;
-    const pnlPct = pos.side === "long" ? (stock.price - pos.avgCost) / pos.avgCost : (pos.avgCost - stock.price) / pos.avgCost;
-    const cost = pos.qty * pos.avgCost;
-    totalMktVal += mktVal; totalPnl += pnl; totalCost += cost;
-    return { ticker, pos, stock, mktVal, pnl, pnlPct, cost };
-  }).filter(Boolean) as { ticker: string; pos: PortfolioPosition; stock: BattleStock; mktVal: number; pnl: number; pnlPct: number; cost: number }[];
+  const hasFlash = !!recentTrade;
 
   return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-900 overflow-hidden">
-      <div className="px-3 py-1.5 border-b border-neutral-800">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">Your Positions</span>
+    <div className={`rounded-lg border bg-neutral-900 p-2 transition-all ${
+      isUser ? "border-amber-500/30" : hasFlash ? "border-cyan-500/30 animate-trade-flash" : "border-neutral-800"
+    }`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className={`text-[11px] font-semibold truncate ${isUser ? "text-amber-400" : "text-neutral-200"}`}>{name}</span>
+          {isUser && <span className="text-[7px] uppercase font-bold text-amber-500">YOU</span>}
+        </div>
+        <span className={`text-[10px] font-bold font-[family-name:var(--font-geist-mono)] ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+          {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%
+        </span>
       </div>
-      <table className="w-full text-[11px]">
-        <thead><tr className="text-neutral-500 text-left border-b border-neutral-800/50">
-          <th className="px-3 py-1.5 font-medium">Stock</th><th className="px-2 py-1.5 font-medium">Side</th>
-          <th className="px-2 py-1.5 font-medium text-right">Shares</th><th className="px-2 py-1.5 font-medium text-right">Entry</th>
-          <th className="px-2 py-1.5 font-medium text-right">Current</th><th className="px-2 py-1.5 font-medium text-right">Mkt Value</th>
-          <th className="px-2 py-1.5 font-medium text-right">P&L</th><th className="px-2 py-1.5 font-medium text-right">P&L %</th>
-        </tr></thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.ticker} className="border-b border-neutral-800/30 hover:bg-neutral-800/20">
-              <td className="px-3 py-1.5 font-[family-name:var(--font-geist-mono)] font-semibold text-neutral-200">{r.ticker}</td>
-              <td className="px-2 py-1.5"><span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${r.pos.side === "long" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>{r.pos.side.toUpperCase()}</span></td>
-              <td className="px-2 py-1.5 text-right text-neutral-300 font-[family-name:var(--font-geist-mono)]">{r.pos.qty}</td>
-              <td className="px-2 py-1.5 text-right text-neutral-400 font-[family-name:var(--font-geist-mono)]">${r.pos.avgCost.toFixed(2)}</td>
-              <td className="px-2 py-1.5 text-right text-neutral-200 font-[family-name:var(--font-geist-mono)]">${r.stock.price.toFixed(2)}</td>
-              <td className="px-2 py-1.5 text-right text-neutral-300 font-[family-name:var(--font-geist-mono)]">{formatCurrency(r.mktVal)}</td>
-              <td className={`px-2 py-1.5 text-right font-[family-name:var(--font-geist-mono)] font-semibold ${r.pnl >= 0 ? "text-green-400" : "text-red-400"}`}>{r.pnl >= 0 ? "+" : ""}{formatCurrency(r.pnl)}</td>
-              <td className={`px-2 py-1.5 text-right font-[family-name:var(--font-geist-mono)] ${r.pnl >= 0 ? "text-green-400" : "text-red-400"}`}>{r.pnlPct >= 0 ? "+" : ""}{(r.pnlPct * 100).toFixed(1)}%</td>
-            </tr>
-          ))}
-        </tbody>
-        <tfoot><tr className="border-t border-neutral-700/50">
-          <td className="px-3 py-1.5 font-semibold text-neutral-400" colSpan={5}>Total</td>
-          <td className="px-2 py-1.5 text-right font-[family-name:var(--font-geist-mono)] text-neutral-300 font-semibold">{formatCurrency(totalMktVal)}</td>
-          <td className={`px-2 py-1.5 text-right font-[family-name:var(--font-geist-mono)] font-bold ${totalPnl >= 0 ? "text-green-400" : "text-red-400"}`}>{totalPnl >= 0 ? "+" : ""}{formatCurrency(totalPnl)}</td>
-          <td className="px-2 py-1.5"></td>
-        </tr></tfoot>
-      </table>
-      <div className="flex items-center gap-4 px-3 py-1.5 border-t border-neutral-800 text-[10px] text-neutral-500 font-[family-name:var(--font-geist-mono)]">
-        <span>Cash: {formatCurrency(portfolio.cash)}</span>
-        <span>Invested: {formatCurrency(totalCost)}</span>
-        <span>Total: <span className="text-neutral-300 font-semibold">{formatCurrency(portfolio.cash + totalMktVal)}</span></span>
+      <div className="text-[8px] text-neutral-600 truncate mb-1.5">{getModelLabel(model)}</div>
+
+      {/* Positions */}
+      {positions.length > 0 ? (
+        <div className="space-y-0.5">
+          {positions.map(([ticker, pos]) => {
+            const stock = stocks.find(s => s.ticker === ticker);
+            const curPrice = stock ? stock.price : pos.avgCost;
+            const posPnl = pos.side === "long"
+              ? (curPrice - pos.avgCost) * pos.qty
+              : (pos.avgCost - curPrice) * pos.qty;
+            return (
+              <div key={ticker} className="flex items-center justify-between text-[10px] font-[family-name:var(--font-geist-mono)]">
+                <span className="text-neutral-400">
+                  <span className={pos.side === "long" ? "text-green-500" : "text-red-500"}>{pos.side === "long" ? "L" : "S"}</span>
+                  {" "}{pos.qty} {ticker}
+                </span>
+                <span className={posPnl >= 0 ? "text-green-400/80" : "text-red-400/80"}>
+                  {posPnl >= 0 ? "+" : ""}{formatCompactCurrency(posPnl)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-[9px] text-neutral-700">No positions</div>
+      )}
+
+      {/* Cash */}
+      <div className="text-[9px] text-neutral-600 mt-1 font-[family-name:var(--font-geist-mono)]">
+        Cash: {formatCompactCurrency(portfolio.cash)}
+      </div>
+
+      {/* Trade flash banner */}
+      {hasFlash && (
+        <div className="mt-1 px-1.5 py-0.5 rounded bg-cyan-500/10 text-[9px] text-cyan-400 font-semibold truncate">
+          {recentTrade.trade.action === "LONG" ? "LONG" : recentTrade.trade.action === "SHORT" ? "SHORT" : "CLOSED"}{" "}
+          {recentTrade.trade.qty}x {recentTrade.trade.ticker}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Participants Panel — grid of all participants
+// ============================================================
+
+function ParticipantsPanel({ userPortfolio, npcs, stocks, userName, userModel, recentNpcTrades }: {
+  userPortfolio: Portfolio; npcs: NpcAgent[]; stocks: BattleStock[];
+  userName: string; userModel: string; recentNpcTrades: Record<string, RecentNpcTrade>;
+}) {
+  return (
+    <div>
+      <div className="mb-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">All Participants</span>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2">
+        <NpcPositionCard name={userName} model={userModel} portfolio={userPortfolio} stocks={stocks} isUser />
+        {npcs.map(npc => (
+          <NpcPositionCard key={npc.id} name={npc.name} model={npc.model} portfolio={npc.portfolio} stocks={stocks}
+            recentTrade={recentNpcTrades[npc.id]} />
+        ))}
       </div>
     </div>
   );
 }
 
 // ============================================================
-// PART 4: MY AGENT Panel — persistent activity log across all rounds
+// Token Usage Panel — sidebar panel showing per-agent token consumption
 // ============================================================
 
-interface ActivityLogEntry {
-  id: number;
-  round: number;
-  timeLeft: number;
-  newsHeadline: string | null;
-  reasoning: string;
-  trades: { action: string; ticker: string; qty: number }[];
-  status: "executed" | "auto-executed" | "auto-adjusted" | "auto-hold" | "hold" | "pending";
+function TokenUsagePanel({ tokenUsage }: {
+  tokenUsage: Record<string, { name: string; type: "trading" | "market"; tokens: number; calls: number }>;
+}) {
+  const entries = Object.entries(tokenUsage).sort((a, b) => b[1].tokens - a[1].tokens);
+  if (entries.length === 0) return null;
+  const totalTokens = entries.reduce((sum, [, v]) => sum + v.tokens, 0);
+
+  return (
+    <div className="border-b border-neutral-800 px-3 py-2">
+      <div className="flex items-center justify-between mb-1.5">
+        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">Token Usage</h2>
+        <span className="text-[9px] text-neutral-600 font-[family-name:var(--font-geist-mono)]">
+          {totalTokens >= 1000 ? `${(totalTokens / 1000).toFixed(1)}K` : totalTokens}
+        </span>
+      </div>
+      <div className="space-y-0.5">
+        {entries.map(([key, val]) => (
+          <div key={key} className="flex items-center justify-between text-[10px]">
+            <span className="text-neutral-400 truncate mr-2">{val.name}</span>
+            <span className="text-neutral-600 font-[family-name:var(--font-geist-mono)] shrink-0">
+              {val.tokens >= 1000 ? `${(val.tokens / 1000).toFixed(1)}K` : val.tokens}
+              <span className="text-neutral-700 ml-0.5">({val.calls})</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
+
+// ============================================================
+// PART 4: MY AGENT Panel — simplified (no activity log)
+// ============================================================
 
 function MyAgentPanel({
   strategy, adjustments, loading, strategyExecuted, autopilot, modelLabel,
   onExecute, onExecuteAdjustment, onToggleAutopilot,
   chatMessages, chatLoading, onSendChat,
-  activityLog,
 }: {
   strategy: AgentStrategyRec | null; adjustments: AgentAdjustment[]; loading: boolean;
   strategyExecuted: boolean; autopilot: boolean; modelLabel: string;
-  round: number; tradingTimeLeft: number;
   onExecute: () => { executed: number; failed: number; skipped: number; details: string[] };
   onExecuteAdjustment: (index: number) => { executed: number; failed: number; skipped: number; details: string[] };
   onToggleAutopilot: () => void;
   chatMessages: { role: "user" | "assistant"; content: string }[]; chatLoading: boolean; onSendChat: (msg: string) => void;
-  activityLog: ActivityLogEntry[];
 }) {
   const [chatInput, setChatInput] = useState("");
   const [autoExecFlash, setAutoExecFlash] = useState(false);
@@ -393,7 +451,7 @@ function MyAgentPanel({
 
   useEffect(() => {
     agentEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activityLog.length, chatMessages.length]);
+  }, [chatMessages.length, strategy, adjustments.length]);
 
   useEffect(() => {
     if (autopilot && strategyExecuted) {
@@ -404,9 +462,7 @@ function MyAgentPanel({
   }, [autopilot, strategyExecuted]);
 
   const handleExecute = () => { onExecute(); };
-
   const handleSend = () => { const msg = chatInput.trim(); if (!msg || chatLoading) return; setChatInput(""); onSendChat(msg); };
-
   const latestAdj = adjustments.length > 0 ? adjustments[adjustments.length - 1] : null;
 
   return (
@@ -426,61 +482,58 @@ function MyAgentPanel({
         </button>
       </div>
 
-      {/* Activity log — persistent, scrollable, spans all rounds */}
+      {/* Strategy + proposed trades */}
       <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0" style={{ maxHeight: "400px" }}>
-        {loading && activityLog.length === 0 && (
+        {loading && (
           <div className="flex items-center gap-2 text-sm text-amber-400 py-2">
             <div className="w-3 h-3 border-2 border-amber-500/30 border-t-amber-500 rounded-full animate-spin" />
             Analyzing market...
           </div>
         )}
 
-        {activityLog.map((entry) => (
-          <div key={entry.id} className="border-b border-neutral-800/30 pb-2 last:border-0">
-            {/* Round + time + news */}
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-[10px] font-bold text-neutral-500 font-[family-name:var(--font-geist-mono)]">
-                R{entry.round} {"\u00B7"} {Math.floor(entry.timeLeft / 60)}:{String(entry.timeLeft % 60).padStart(2, "0")}
-              </span>
-              {entry.newsHeadline && (
-                <span className="text-[10px] text-amber-400/80 truncate flex-1">| {entry.newsHeadline}</span>
-              )}
-            </div>
-            {/* Reasoning — PART 2: 15px readable */}
-            <p className="text-[13px] leading-relaxed text-neutral-300 mb-1.5">{cleanAgentText(entry.reasoning)}</p>
-            {/* Trade cards */}
-            {entry.trades.length > 0 ? (
+        {/* Current strategy summary */}
+        {strategy && (
+          <div className="border-b border-neutral-800/30 pb-2">
+            <p className="text-[13px] leading-relaxed text-neutral-300 mb-1.5">{cleanAgentText(strategy.summary || "")}</p>
+            {strategy.trades.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-1">
-                {entry.trades.map((t, j) => (
+                {strategy.trades.map((t, j) => (
                   <span key={j} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold font-[family-name:var(--font-geist-mono)] ${
                     t.action === "LONG" ? "bg-green-500/15 text-green-400" : t.action === "SHORT" ? "bg-red-500/15 text-red-400" : "bg-amber-500/15 text-amber-400"
                   }`}>{t.action} {t.qty}x {t.ticker}</span>
                 ))}
               </div>
-            ) : null}
-            {/* Status */}
-            <div className={`text-[10px] font-semibold uppercase tracking-wider ${
-              entry.status.includes("auto") ? "text-green-400/70" : entry.status === "executed" ? "text-green-400/70" : entry.status === "pending" ? "text-amber-400/70" : "text-neutral-500"
-            }`}>
-              {entry.status === "auto-executed" ? "AUTO-EXECUTED \u2713" :
-               entry.status === "auto-adjusted" ? "AUTO-ADJUSTED \u2713" :
-               entry.status === "auto-hold" ? "AUTO-HOLD \u2713" :
-               entry.status === "executed" ? "EXECUTED \u2713" :
-               entry.status === "hold" ? "HOLD \u2713" :
-               "PENDING"}
-            </div>
-          </div>
-        ))}
-
-        {/* Pending strategy that hasn't been logged yet */}
-        {loading && activityLog.length > 0 && (
-          <div className="flex items-center gap-2 text-xs text-amber-400 py-1">
-            <div className="w-2.5 h-2.5 border-2 border-amber-500/30 border-t-amber-500 rounded-full animate-spin" />
-            Analyzing new situation...
+            )}
+            {strategyExecuted && (
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-green-400/70">
+                {autopilot ? "AUTO-EXECUTED \u2713" : "EXECUTED \u2713"}
+              </div>
+            )}
           </div>
         )}
 
-        {/* Manual execute button for latest unexxecuted strategy */}
+        {/* Latest adjustment */}
+        {latestAdj && (
+          <div className="border-b border-neutral-800/30 pb-2">
+            <p className="text-[13px] leading-relaxed text-neutral-300 mb-1.5">{cleanAgentText(latestAdj.reasoning)}</p>
+            {latestAdj.trades.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-1">
+                {latestAdj.trades.map((t, j) => (
+                  <span key={j} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold font-[family-name:var(--font-geist-mono)] ${
+                    t.action === "LONG" ? "bg-green-500/15 text-green-400" : t.action === "SHORT" ? "bg-red-500/15 text-red-400" : "bg-amber-500/15 text-amber-400"
+                  }`}>{t.action} {t.qty}x {t.ticker}</span>
+                ))}
+              </div>
+            )}
+            {latestAdj.executed && (
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-green-400/70">
+                {autopilot ? "AUTO-ADJUSTED \u2713" : "EXECUTED \u2713"}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Manual execute buttons */}
         {!autopilot && strategy && strategy.trades.length > 0 && !strategyExecuted && !loading && (
           <button onClick={handleExecute}
             className="w-full py-2 rounded-lg text-xs font-bold bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors border border-green-500/20">
@@ -569,147 +622,77 @@ function getNpcColor(name: string, allNames: string[]): string {
   return NPC_COLOR_PALETTE[idx >= 0 ? idx % NPC_COLOR_PALETTE.length : 0];
 }
 
-// Abbreviate agent names: first letter of each word
-function getAgentAbbrev(name: string): string {
-  return name.split(/\s+/).map(w => w[0]?.toUpperCase() || "").join("").slice(0, 3);
-}
-
-function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: ArenaChatMessage[]; onSendMessage: (content: string) => void; round: number; npcNames: string[] }) {
+function ArenaChatPanel({ messages, onSendMessage, npcNames }: { messages: ArenaChatMessage[]; onSendMessage: (content: string) => void; npcNames: string[] }) {
   const [input, setInput] = useState("");
-  const [tradeLogCollapsed, setTradeLogCollapsed] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const tradeEndRef = useRef<HTMLDivElement>(null);
 
-  // Split messages: chat = personality + news + system announcements; trades = npc_trade + user_trade
+  // Only show chat messages (personality + news + system announcements), not trade messages
   const chatMessages = messages.filter((m) => !m.isSystem || m.systemType === "news" || m.systemType === "system");
-  const tradeMessages = messages.filter((m) => m.isSystem && (m.systemType === "npc_trade" || m.systemType === "user_trade"));
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages.length]);
-  useEffect(() => {
-    tradeEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [tradeMessages.length]);
 
   const handleSend = () => { const msg = input.trim(); if (!msg) return; setInput(""); onSendMessage(msg); };
 
-  // Track round separators for chat
   let lastChatRound = 0;
-  let lastTradeRound = 0;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {/* ARENA CHAT — 80% (the star) */}
-      <div className="flex flex-col min-h-0" style={{ flex: tradeLogCollapsed ? "1 1 auto" : "4 1 0%" }}>
-        <div className="px-3 py-1.5 border-b border-neutral-800 shrink-0">
-          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-cyan-500">Arena Chat</h2>
-        </div>
-        <div className="flex-1 overflow-y-auto px-3 py-1.5 space-y-0.5 min-h-0">
-          {chatMessages.length === 0 && <span className="text-xs text-neutral-600">Waiting for action...</span>}
-          {chatMessages.map((m) => {
-            let separator = null;
-            if (m.isSystem && m.systemType === "system" && m.message.includes("Trading is open")) {
-              const roundMatch = m.message.match(/Round (\d+)/);
-              const msgRound = roundMatch ? parseInt(roundMatch[1]) : 0;
-              if (msgRound > lastChatRound) {
-                lastChatRound = msgRound;
-                separator = (
-                  <div key={`csep-${msgRound}`} className="flex items-center gap-2 py-1.5 my-1">
-                    <div className="flex-1 h-px bg-neutral-700/50" />
-                    <span className="text-[9px] font-bold text-neutral-600 uppercase tracking-wider">Round {msgRound}</span>
-                    <div className="flex-1 h-px bg-neutral-700/50" />
-                  </div>
-                );
-              }
-            }
-
-            if (m.isSystem) {
-              const color = m.systemType === "news" ? "text-amber-500/80" : "text-neutral-500";
-              return (
-                <div key={m.id}>
-                  {separator}
-                  <div className={`text-[11px] leading-relaxed ${color}`}>
-                    {m.message}
-                  </div>
+      <div className="px-3 py-1.5 border-b border-neutral-800 shrink-0">
+        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-cyan-500">Arena Chat</h2>
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-1.5 space-y-0.5 min-h-0">
+        {chatMessages.length === 0 && <span className="text-xs text-neutral-600">Waiting for action...</span>}
+        {chatMessages.map((m) => {
+          let separator = null;
+          if (m.isSystem && m.systemType === "system" && m.message.includes("Trading is open")) {
+            const roundMatch = m.message.match(/Round (\d+)/);
+            const msgRound = roundMatch ? parseInt(roundMatch[1]) : 0;
+            if (msgRound > lastChatRound) {
+              lastChatRound = msgRound;
+              separator = (
+                <div key={`csep-${msgRound}`} className="flex items-center gap-2 py-1.5 my-1">
+                  <div className="flex-1 h-px bg-neutral-700/50" />
+                  <span className="text-[9px] font-bold text-neutral-600 uppercase tracking-wider">Round {msgRound}</span>
+                  <div className="flex-1 h-px bg-neutral-700/50" />
                 </div>
               );
             }
+          }
+
+          if (m.isSystem) {
+            const color = m.systemType === "news" ? "text-amber-500/80" : "text-neutral-500";
             return (
               <div key={m.id}>
                 {separator}
-                <div className="text-[14px] leading-relaxed">
-                  <span className={`font-semibold ${m.isUser ? "text-amber-400" : getNpcColor(m.agentName, npcNames)}`}>{m.agentName}</span>
-                  <span className="text-neutral-600">: </span>
-                  <span className="text-neutral-300">{m.message}</span>
+                <div className={`text-[11px] leading-relaxed ${color}`}>
+                  {m.message}
                 </div>
               </div>
             );
-          })}
-          <div ref={chatEndRef} />
-        </div>
-        <div className="px-3 py-1 border-t border-neutral-800/50 shrink-0">
-          <div className="flex gap-1.5">
-            <input type="text" value={input} onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSend()} placeholder="Chat..."
-              className="flex-1 h-6 rounded border border-neutral-700 bg-neutral-800 px-2 text-[11px] text-neutral-100 placeholder:text-neutral-600 focus:border-cyan-500 focus:outline-none" />
-            <button onClick={handleSend} disabled={!input.trim()}
-              className="h-6 px-2 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 disabled:opacity-40">Send</button>
-          </div>
-        </div>
+          }
+          return (
+            <div key={m.id}>
+              {separator}
+              <div className="text-[14px] leading-relaxed">
+                <span className={`font-semibold ${m.isUser ? "text-amber-400" : getNpcColor(m.agentName, npcNames)}`}>{m.agentName}</span>
+                <span className="text-neutral-600">: </span>
+                <span className="text-neutral-300">{m.message}</span>
+              </div>
+            </div>
+          );
+        })}
+        <div ref={chatEndRef} />
       </div>
-
-      {/* TRADE LOG — 20% (compact, collapsible) */}
-      <div className={`flex flex-col border-t border-neutral-800 shrink-0 ${tradeLogCollapsed ? "" : "min-h-0"}`}
-        style={tradeLogCollapsed ? undefined : { flex: "1 1 0%", maxHeight: "20%" }}>
-        <button onClick={() => setTradeLogCollapsed(!tradeLogCollapsed)}
-          className="px-3 py-1 flex items-center justify-between hover:bg-neutral-800/30 transition-colors shrink-0">
-          <h2 className="text-[9px] font-semibold uppercase tracking-wider text-neutral-600">
-            Trade Log <span className="text-neutral-700 ml-0.5">({tradeMessages.length})</span>
-          </h2>
-          <span className="text-neutral-700 text-[9px]">{tradeLogCollapsed ? "\u25BC" : "\u25B2"}</span>
-        </button>
-        {!tradeLogCollapsed && (
-          <div className="flex-1 overflow-y-auto px-3 py-0.5 min-h-0">
-            {tradeMessages.length === 0 && <span className="text-[9px] text-neutral-700">No trades yet</span>}
-            {tradeMessages.map((m) => {
-              let separator = null;
-              const msgIdx = messages.indexOf(m);
-              for (let i = msgIdx - 1; i >= 0; i--) {
-                const prev = messages[i];
-                if (prev.isSystem && prev.systemType === "system" && prev.message.includes("Trading is open")) {
-                  const roundMatch = prev.message.match(/Round (\d+)/);
-                  const msgRound = roundMatch ? parseInt(roundMatch[1]) : 0;
-                  if (msgRound > lastTradeRound) {
-                    lastTradeRound = msgRound;
-                    separator = (
-                      <div key={`tsep-${msgRound}`} className="flex items-center gap-1 py-0.5">
-                        <div className="flex-1 h-px bg-neutral-800/50" />
-                        <span className="text-[7px] font-bold text-neutral-700 uppercase">R{msgRound}</span>
-                        <div className="flex-1 h-px bg-neutral-800/50" />
-                      </div>
-                    );
-                  }
-                  break;
-                }
-              }
-
-              // Compact one-line format: "MT: LONG 100 NVDA @ $196"
-              const abbrev = getAgentAbbrev(m.agentName);
-              const isUser = m.systemType === "user_trade";
-              return (
-                <div key={m.id}>
-                  {separator}
-                  <div className="text-[11px] leading-tight text-neutral-600 font-[family-name:var(--font-geist-mono)] truncate">
-                    <span className={isUser ? "text-amber-500/60" : "text-neutral-500"}>{isUser ? "YOU" : abbrev}</span>
-                    <span className="text-neutral-700">: </span>
-                    <span className="text-neutral-500">{m.message}</span>
-                  </div>
-                </div>
-              );
-            })}
-            <div ref={tradeEndRef} />
-          </div>
-        )}
+      <div className="px-3 py-1 border-t border-neutral-800/50 shrink-0">
+        <div className="flex gap-1.5">
+          <input type="text" value={input} onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSend()} placeholder="Chat..."
+            className="flex-1 h-6 rounded border border-neutral-700 bg-neutral-800 px-2 text-[11px] text-neutral-100 placeholder:text-neutral-600 focus:border-cyan-500 focus:outline-none" />
+          <button onClick={handleSend} disabled={!input.trim()}
+            className="h-6 px-2 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 disabled:opacity-40">Send</button>
+        </div>
       </div>
     </div>
   );
@@ -1151,77 +1134,6 @@ function BattleContent() {
 
   const battle = useBattle(profiles, agentName, userModelId, userModelLabel, userStrategy, userSystemPrompt, npcConfigs, autoAgentParam, templateId === "custom" ? customPrompt : undefined);
 
-  // PART 4: Build activity log from strategy + adjustments, persistent across rounds
-  const activityLogRef = useRef<ActivityLogEntry[]>([]);
-  const activityIdRef = useRef(0);
-  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
-  const lastStrategyRef = useRef<string | null>(null);
-  const lastAdjCountRef = useRef(0);
-
-  // Track new strategy entries
-  useEffect(() => {
-    if (!battle.agentStrategy) return;
-    const key = `${battle.round}-strategy-${battle.agentStrategy.summary?.slice(0, 50)}`;
-    if (key === lastStrategyRef.current) return;
-    lastStrategyRef.current = key;
-
-    const latestNews = battle.roundNewsEvents.length > 0 ? battle.roundNewsEvents[0].headline : null;
-    activityIdRef.current++;
-    const entry: ActivityLogEntry = {
-      id: activityIdRef.current,
-      round: battle.round,
-      timeLeft: battle.tradingTimeLeft,
-      newsHeadline: latestNews,
-      reasoning: battle.agentStrategy.summary || "Analyzing...",
-      trades: battle.agentStrategy.trades.map(t => ({ action: t.action, ticker: t.ticker, qty: t.qty })),
-      status: battle.strategyExecuted
-        ? (battle.autopilot ? "auto-executed" : "executed")
-        : battle.agentStrategy.trades.length === 0
-        ? (battle.autopilot ? "auto-hold" : "hold")
-        : "pending",
-    };
-    activityLogRef.current = [...activityLogRef.current, entry];
-    setActivityLog([...activityLogRef.current]);
-  }, [battle.agentStrategy, battle.round, battle.roundNewsEvents, battle.tradingTimeLeft, battle.strategyExecuted, battle.autopilot]);
-
-  // Track adjustments
-  useEffect(() => {
-    if (battle.agentAdjustments.length <= lastAdjCountRef.current) return;
-    const newAdjs = battle.agentAdjustments.slice(lastAdjCountRef.current);
-    lastAdjCountRef.current = battle.agentAdjustments.length;
-
-    for (const adj of newAdjs) {
-      activityIdRef.current++;
-      const entry: ActivityLogEntry = {
-        id: activityIdRef.current,
-        round: battle.round,
-        timeLeft: battle.tradingTimeLeft,
-        newsHeadline: adj.headline,
-        reasoning: adj.reasoning,
-        trades: adj.trades.map(t => ({ action: t.action, ticker: t.ticker, qty: t.qty })),
-        status: adj.executed
-          ? (battle.autopilot ? "auto-adjusted" : "executed")
-          : adj.trades.length === 0
-          ? (battle.autopilot ? "auto-hold" : "hold")
-          : "pending",
-      };
-      activityLogRef.current = [...activityLogRef.current, entry];
-    }
-    setActivityLog([...activityLogRef.current]);
-  }, [battle.agentAdjustments, battle.round, battle.tradingTimeLeft, battle.autopilot]);
-
-  // Update pending entries to executed when strategyExecuted changes
-  useEffect(() => {
-    if (!battle.strategyExecuted) return;
-    const updated = activityLogRef.current.map(e =>
-      e.status === "pending" && e.round === battle.round
-        ? { ...e, status: (battle.autopilot ? "auto-executed" : "executed") as ActivityLogEntry["status"] }
-        : e
-    );
-    activityLogRef.current = updated;
-    setActivityLog([...updated]);
-  }, [battle.strategyExecuted, battle.round, battle.autopilot]);
-
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const handleExit = () => setShowExitConfirm(true);
   const handleConfirmExit = () => router.push("/");
@@ -1251,25 +1163,27 @@ function BattleContent() {
             ))}
           </div>
 
-          <PositionsTable portfolio={battle.userPortfolio} stocks={battle.stocks} />
+          <ParticipantsPanel
+            userPortfolio={battle.userPortfolio} npcs={battle.npcs} stocks={battle.stocks}
+            userName={agentName} userModel={userModelId} recentNpcTrades={battle.recentNpcTrades}
+          />
 
           <MyAgentPanel
             strategy={battle.agentStrategy} adjustments={battle.agentAdjustments}
             loading={battle.strategyLoading} strategyExecuted={battle.strategyExecuted}
             autopilot={battle.autopilot} modelLabel={userModelLabel}
-            round={battle.round} tradingTimeLeft={battle.tradingTimeLeft}
             onExecute={battle.executeStrategy} onExecuteAdjustment={battle.executeAdjustment}
             onToggleAutopilot={() => battle.setAutopilot(!battle.autopilot)}
             chatMessages={battle.chatMessages} chatLoading={battle.chatLoading}
             onSendChat={battle.sendChatMessage}
-            activityLog={activityLog}
           />
         </div>
 
         {/* Right sidebar */}
         <div className="w-72 flex flex-col min-h-0 overflow-hidden bg-neutral-900 border-l border-neutral-800">
           <LeaderboardPanel standings={battle.standings} />
-          <ArenaChatPanel messages={battle.arenaMessages} onSendMessage={battle.sendArenaMessage} round={battle.round}
+          <TokenUsagePanel tokenUsage={battle.tokenUsage} />
+          <ArenaChatPanel messages={battle.arenaMessages} onSendMessage={battle.sendArenaMessage}
             npcNames={npcConfigs.map(c => c.name || `NPC ${c.index + 1}`)} />
         </div>
       </div>

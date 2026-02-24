@@ -16,7 +16,7 @@ async function callOpenRouter(
   messages: { role: string; content: string }[],
   maxTokens: number,
   temperature: number
-): Promise<{ content: string | null; error?: string }> {
+): Promise<{ content: string | null; usage?: unknown; error?: string }> {
   const doCall = async (m: string) => {
     return fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -38,7 +38,7 @@ async function callOpenRouter(
   }
   if (!res.ok) return { content: null, error: "Model failed" };
   const data = await res.json();
-  return { content: data.choices?.[0]?.message?.content ?? null };
+  return { content: data.choices?.[0]?.message?.content ?? null, usage: data.usage };
 }
 
 /** Fallback: derive per-stock impacts from headline sentiment */
@@ -230,6 +230,7 @@ Return ONLY valid JSON — no markdown, no code fences, no explanation.`;
             version,
             model,
             fallback: false,
+            usage: result.usage,
           });
         }
       }

@@ -25,7 +25,7 @@ async function callOpenRouter(
   messages: { role: string; content: string }[],
   maxTokens: number,
   temperature: number
-): Promise<{ content: string | null; error?: string }> {
+): Promise<{ content: string | null; usage?: unknown; error?: string }> {
   const doCall = async (m: string) => {
     return fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -55,14 +55,14 @@ async function callOpenRouter(
         return { content: null, error: "Both models failed" };
       }
       const data = await res.json();
-      return { content: data.choices?.[0]?.message?.content ?? null };
+      return { content: data.choices?.[0]?.message?.content ?? null, usage: data.usage };
     }
 
     return { content: null, error: errText };
   }
 
   const data = await res.json();
-  return { content: data.choices?.[0]?.message?.content ?? null };
+  return { content: data.choices?.[0]?.message?.content ?? null, usage: data.usage };
 }
 
 export async function POST(request: NextRequest) {
@@ -124,7 +124,7 @@ ${stockSummary}`;
 
         if (Object.keys(targets).length > 0) {
           console.log(`[market-engine] Market Engine Agent (from registry) price impacts: ${Object.entries(targets).map(([t, v]) => `${t} ${(v as number) >= 0 ? "+" : ""}${((v as number) * 100).toFixed(1)}%`).join(", ")}`);
-          return NextResponse.json({ targets });
+          return NextResponse.json({ targets, usage: result.usage });
         }
       }
     } catch {

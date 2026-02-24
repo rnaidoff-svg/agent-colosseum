@@ -52,6 +52,14 @@ body {
   animation: flash-red 0.6s ease-out;
 }
 
+@keyframes trade-flash {
+  0% { box-shadow: 0 0 8px rgba(34, 211, 238, 0.4); }
+  100% { box-shadow: 0 0 0px rgba(34, 211, 238, 0); }
+}
+.animate-trade-flash {
+  animation: trade-flash 2s ease-out;
+}
+
 /* Hide scrollbar but allow scrolling */
 .no-scrollbar {
   -ms-overflow-style: none;
