@@ -842,6 +842,136 @@ function migrateBattleModels() {
 }
 
 // ============================================================
+// Chain of Command: Auto-sync DIRECT REPORTS blocks
+// ============================================================
+
+/**
+ * Generate the DIRECT REPORTS block for an agent based on current DB state.
+ * - General: lists all Lieutenants with their soldiers
+ * - Lieutenant: lists their soldiers
+ * - Soldier: returns null (no reports)
+ */
+export function generateDirectReportsBlock(agentId: string): string | null {
+  const db = getDb();
+  const agent = db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId) as AgentRow | null;
+  if (!agent) return null;
+  if (agent.rank === "soldier") return null;
+
+  const allAgents = db.prepare(
+    "SELECT * FROM agents WHERE is_active = 1 ORDER BY sort_order"
+  ).all() as AgentRow[];
+
+  let block = "\n\n## DIRECT REPORTS\n";
+  block += "(This is the AUTHORITATIVE list of agents you manage. If any other part of your prompt lists different agents, THIS section is correct.)\n\n";
+
+  if (agent.rank === "general") {
+    block += "Use the lieutenant's exact agent_id in your DELEGATION. ";
+    block += "When an order affects a soldier, delegate to their lieutenant — never skip the chain.\n\n";
+
+    const lieutenants = allAgents.filter(a => a.rank === "lieutenant");
+    for (const lt of lieutenants) {
+      const soldiers = allAgents.filter(a => a.parent_id === lt.id && a.rank === "soldier");
+      block += `DIVISION: ${lt.name} (id: ${lt.id}) — ${lt.description || "No description"}\n`;
+      if (soldiers.length > 0) {
+        block += `  Soldiers:\n`;
+        for (const s of soldiers) {
+          block += `  - ${s.name} (id: ${s.id}) — ${s.description || "No description"}\n`;
+        }
+      } else {
+        block += `  Soldiers: (none)\n`;
+      }
+      block += "\n";
+    }
+
+    // Direct soldiers under General (unusual but possible)
+    const directSoldiers = allAgents.filter(a => a.parent_id === agentId && a.rank === "soldier");
+    if (directSoldiers.length > 0) {
+      block += `DIRECT SOLDIERS (no lieutenant):\n`;
+      for (const s of directSoldiers) {
+        block += `  - ${s.name} (id: ${s.id}) — ${s.description || "No description"}\n`;
+      }
+      block += "\n";
+    }
+  } else if (agent.rank === "lieutenant") {
+    block += "Use the soldier's exact agent_id in your changes JSON response.\n\n";
+
+    const soldiers = allAgents.filter(a => a.parent_id === agentId && a.rank === "soldier");
+    if (soldiers.length === 0) {
+      block += "(No soldiers currently assigned to you.)\n";
+    } else {
+      for (let i = 0; i < soldiers.length; i++) {
+        const s = soldiers[i];
+        block += `${i + 1}. ${s.name} (id: ${s.id}) — ${s.description || "No description"}\n`;
+      }
+    }
+  }
+
+  block += "## END DIRECT REPORTS";
+  return block;
+}
+
+/**
+ * Sync the chain of command: update the DIRECT REPORTS block in every
+ * General and Lieutenant prompt to reflect the current hierarchy.
+ *
+ * - If a prompt already has a ## DIRECT REPORTS block, replace it.
+ * - If not, append it.
+ * - Only creates a new prompt version if the block content actually changed.
+ * - Idempotent: running multiple times produces the same result.
+ */
+export function syncChainOfCommand(): void {
+  const db = getDb();
+  const leaders = db.prepare(
+    "SELECT * FROM agents WHERE rank IN ('general', 'lieutenant') AND is_active = 1 ORDER BY sort_order"
+  ).all() as AgentRow[];
+
+  for (const agent of leaders) {
+    const newBlock = generateDirectReportsBlock(agent.id);
+    if (!newBlock) continue;
+
+    // Get the current active prompt text
+    const currentPromptRow = db.prepare(
+      "SELECT * FROM agent_prompts WHERE agent_id = ? AND is_active = 1 ORDER BY version DESC LIMIT 1"
+    ).get(agent.id) as AgentPromptRow | null;
+    const currentText = currentPromptRow?.prompt_text || agent.system_prompt;
+
+    // Check if there's an existing DIRECT REPORTS block
+    const blockRegex = /\n*## DIRECT REPORTS\n[\s\S]*?## END DIRECT REPORTS/;
+    let updatedText: string;
+
+    if (blockRegex.test(currentText)) {
+      updatedText = currentText.replace(blockRegex, newBlock);
+    } else {
+      updatedText = currentText.trimEnd() + newBlock;
+    }
+
+    // Only create a new version if the text actually changed
+    if (updatedText === currentText) continue;
+
+    createPromptVersion(agent.id, updatedText, "Auto-sync: updated DIRECT REPORTS block", "system");
+    console.log(`[syncChainOfCommand] Updated DIRECT REPORTS for ${agent.name} (${agent.id})`);
+  }
+}
+
+/**
+ * One-time migration: add initial DIRECT REPORTS blocks to General and LT prompts.
+ */
+function migrateInitialDirectReports() {
+  const db = getDb();
+  const migrated = db.prepare(
+    "SELECT value FROM agent_system_config WHERE key = 'direct_reports_v1'"
+  ).get() as { value: string } | undefined;
+  if (migrated?.value === "true") return;
+
+  syncChainOfCommand();
+
+  db.prepare(
+    "INSERT OR REPLACE INTO agent_system_config (key, value) VALUES ('direct_reports_v1', 'true')"
+  ).run();
+  console.log("[migration] Initial DIRECT REPORTS blocks added to General and LT prompts");
+}
+
+// ============================================================
 // Queries
 // ============================================================
 
@@ -858,6 +988,7 @@ export function getAllAgents(): AgentRow[] {
   migrateNewTradingPersonas();
   migrateScalperToBlitzTrader();
   migrateBattleModels();
+  migrateInitialDirectReports();
   return db.prepare("SELECT * FROM agents ORDER BY sort_order").all() as AgentRow[];
 }
 

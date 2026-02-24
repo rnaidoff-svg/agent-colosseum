@@ -8,6 +8,7 @@ import {
   createPromptVersion,
   createNewAgent,
   deactivateAgent,
+  syncChainOfCommand,
   updateAgentMetadata,
   extractAgentMetadata,
   getAllAgents,
@@ -140,6 +141,7 @@ export async function POST(request: NextRequest) {
         if (autoApproveEnabled) {
           try {
             createNewAgent(proposedId, proposedName, proposedRank, proposedType, proposedParent, proposedDescription, proposedPrompt);
+            syncChainOfCommand();
             updateOrder(order.id, { status: "executed", executed_at: new Date().toISOString(), affected_agents: JSON.stringify([proposedId]) });
             return NextResponse.json({
               orderId: order.id,
@@ -216,6 +218,7 @@ export async function POST(request: NextRequest) {
         if (autoApproveEnabled) {
           const success = deactivateAgent(targetId);
           if (success) {
+            syncChainOfCommand();
             updateOrder(order.id, { status: "executed", executed_at: new Date().toISOString(), affected_agents: JSON.stringify([targetId]) });
             return NextResponse.json({
               orderId: order.id,
@@ -591,6 +594,7 @@ export async function POST(request: NextRequest) {
           console.log(`[DEBUG STEP 6] Updated ${change.agent_id} metadata:`, metadata);
         }
       }
+      syncChainOfCommand();
       updateOrder(order.id, {
         status: "executed",
         executed_at: new Date().toISOString(),

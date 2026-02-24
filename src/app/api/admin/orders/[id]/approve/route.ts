@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOrder, getAgent, updateOrder, createPromptVersion, createNewAgent, deactivateAgent, updateAgentMetadata, extractAgentMetadata } from "@/lib/db/agents";
+import { getOrder, getAgent, updateOrder, createPromptVersion, createNewAgent, deactivateAgent, updateAgentMetadata, extractAgentMetadata, syncChainOfCommand } from "@/lib/db/agents";
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -67,6 +67,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
       approved.push(change.agent_id);
     }
+
+    syncChainOfCommand();
 
     // Only mark fully executed if all changes approved (or no specific filter)
     if (!specificAgentIds || approved.length === proposedChanges.length) {

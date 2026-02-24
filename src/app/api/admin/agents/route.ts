@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createNewAgent } from "@/lib/db/agents";
+import { createNewAgent, syncChainOfCommand } from "@/lib/db/agents";
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
       description || "",
       systemPrompt
     );
+    syncChainOfCommand();
     return NextResponse.json({ agent });
   } catch (error) {
     console.error("Create agent error:", error);
