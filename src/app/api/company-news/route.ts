@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
 
     console.log(`[company-news] Using Company News Agent v${version}, model: ${model}`);
 
-    const availableStocks = stocks.filter((s) => !usedTickers.includes(s.ticker));
+    const availableStocks = stocks.filter((s) => s.ticker !== "SPY");
     if (availableStocks.length === 0) {
       return NextResponse.json({ headline: null, fallback: true });
     }
@@ -109,18 +109,16 @@ export async function POST(request: NextRequest) {
     const allTickers = stocks.map((s) => s.ticker).join(", ");
 
     const usedStr = usedTickers.length > 0
-      ? `\nStocks already targeted this round (DO NOT use as target): ${usedTickers.join(", ")}`
+      ? `\nPrior company news also targeted this stock — use a DIFFERENT angle.`
       : "";
 
-    // Round escalation guidance (PART 6)
-    const escalation = roundNumber === 1
-      ? "Round 1: Generate normal company news."
-      : roundNumber === 2
-        ? "Round 2: Generate dramatic company news."
-        : "Round 3: Generate very dramatic company news — big moves, this is the finale.";
+    // Event escalation guidance
+    const escalation = roundNumber === 2
+      ? "First company event: MODERATE severity."
+      : "Second company event targeting same stock: HIGH-EXTREME severity, different news angle.";
 
-    const userMessage = `Generate 1 company-specific news event for Round ${roundNumber} of 3.
-This is ROUND ${roundNumber} of 3. ${escalation}${usedStr}
+    const userMessage = `Generate 1 company-specific news event for Event ${roundNumber} of 5.
+This is EVENT ${roundNumber} of 5. ${escalation}${usedStr}
 
 STOCKS IN THIS MATCH:
 ${stockSummary}

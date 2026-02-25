@@ -15,12 +15,13 @@ import {
   type TradeInfo,
   type StandingEntry,
   type ArenaChatMessage,
+  type EventScheduleEntry,
   STARTING_CASH,
-  TOTAL_ROUNDS,
   TRADING_DURATION,
-  COUNTDOWN_DURATION,
-  ROUND_END_DURATION,
+  INITIAL_COUNTDOWN,
   TICK_INTERVAL,
+  PRICE_REACTION_DELAY,
+  NUM_EVENTS,
   initBattleStocks,
   tickPrices,
   applyNewsToPrice,
@@ -38,7 +39,7 @@ import {
   generateCompanyNews,
   computeStandings,
   computeBestWorstTrade,
-  scheduleNpcTrades,
+  buildEventSchedule,
 } from "../battle/engine";
 import { getModelLabel } from "../utils/format";
 
@@ -53,7 +54,7 @@ export interface RecentNpcTrade {
 
 // ------ Phase type ------
 
-export type BattlePhase = "pre_round" | "trading" | "round_end" | "match_retro" | "results";
+export type BattlePhase = "countdown" | "trading" | "match_retro" | "results";
 
 // ------ Retro data types ------
 
@@ -74,6 +75,7 @@ export interface DecisionRecord {
   agentName: string;
   model: string;
   round: number;
+  eventIndex: number;  // which event (0-4) triggered this trade
   newsHeadline: string;
   newsType: string;
   newsCategory: string;
@@ -122,10 +124,25 @@ export function useBattle(
   customPrompt?: string
 ) {
   // -- Core state --
-  const [phase, setPhase] = useState<BattlePhase>("pre_round");
-  const [round, setRound] = useState(1);
-  const [countdown, setCountdown] = useState(COUNTDOWN_DURATION);
+  const [phase, setPhase] = useState<BattlePhase>("countdown");
+  const round = 1; // single session — always round 1
+  const [countdown, setCountdown] = useState(INITIAL_COUNTDOWN);
   const [tradingTimeLeft, setTradingTimeLeft] = useState(TRADING_DURATION);
+
+  // -- Event schedule state --
+  const [currentEventIndex, setCurrentEventIndex] = useState(-1); // -1 before first event, 0-4 during
+  const [pendingPriceImpact, setPendingPriceImpact] = useState<{
+    eventIndex: number; event: NewsEvent; countdown: number;
+  } | null>(null);
+  const [nextEventCountdown, setNextEventCountdown] = useState<number | null>(null);
+  const prefetchedEventsRef = useRef<Map<number, {
+    event: NewsEvent | null; marketEngineImpacts: Record<string, number> | null;
+    status: "fetching" | "ready" | "applied";
+  }>>(new Map());
+  const eventScheduleRef = useRef<EventScheduleEntry[]>(buildEventSchedule());
+  const firedEventsRef = useRef<Set<number>>(new Set());
+  const firedPriceImpactsRef = useRef<Set<number>>(new Set());
+  const firedPrefetchesRef = useRef<Set<number>>(new Set());
 
   // -- Market --
   const [stocks, setStocks] = useState<BattleStock[]>(() => initBattleStocks(profiles));
@@ -134,12 +151,11 @@ export function useBattle(
     return computeIndex(s);
   });
 
-  // -- Multi-news per round --
+  // -- News events for session --
   const [roundNewsEvents, setRoundNewsEvents] = useState<NewsEvent[]>([]);
   const [currentNewsImpacts, setCurrentNewsImpacts] = useState<Record<string, number>>({});
   const usedMacroIndicesRef = useRef<Set<number>>(new Set());
   const usedCompanyTickersRef = useRef<string[]>([]);
-  const midRoundNewsFiredRef = useRef<Set<number>>(new Set());
 
   // -- Portfolios --
   const [userPortfolio, setUserPortfolio] = useState<Portfolio>(createPortfolio);
@@ -189,10 +205,7 @@ export function useBattle(
     }));
   }, []);
 
-  // -- NPC scheduling (multi-trade) --
-  const npcScheduleRef = useRef<Record<string, number[]>>({});
-  const npcTradeIndexRef = useRef<Record<string, number>>({});
-  const firedNpcTradeKeysRef = useRef<Set<string>>(new Set());
+  // -- NPC scheduling removed — NPCs now trade reactively per event --
 
   // -- Round P&L tracking --
   const roundStartValueRef = useRef(STARTING_CASH);
@@ -208,6 +221,12 @@ export function useBattle(
 
   // -- Decision logging --
   const decisionsRef = useRef<DecisionRecord[]>([]);
+  const currentEventIndexRef = useRef(-1); // tracks which event (0-4) is active for decision tagging
+
+  // -- Enriched decisions (exposed to UI for retro screen) --
+  const [enrichedDecisions, setEnrichedDecisions] = useState<DecisionRecord[]>([]);
+  // -- Successful trades map (agent name → count of correct trades) --
+  const [successfulTradesMap, setSuccessfulTradesMap] = useState<Map<string, number>>(new Map());
 
   // -- Round snapshots (for QA/retro) --
   const [roundSnapshots, setRoundSnapshots] = useState<RoundSnapshot[]>([]);
@@ -230,8 +249,7 @@ export function useBattle(
   const standingsRef = useRef<StandingEntry[]>([]);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
-  const roundRef = useRef(round);
-  roundRef.current = round;
+  const roundRef = useRef(1); // always 1 — single session
   const agentStrategyRef = useRef(agentStrategy);
   agentStrategyRef.current = agentStrategy;
   const strategyExecutedRef = useRef(strategyExecuted);
@@ -298,6 +316,7 @@ export function useBattle(
 
     decisionsRef.current.push({
       agentName, model, round: roundRef.current,
+      eventIndex: currentEventIndexRef.current,
       newsHeadline: headline, newsType: nType, newsCategory: nCategory,
       actionTaken: trade.action, ticker: trade.ticker,
       qty: trade.qty, price: trade.price, reasoning,
@@ -388,22 +407,24 @@ export function useBattle(
 
       const positionSummary = buildPositionSummary(userPortfolioRef.current, currentStocks);
       const tickers = currentStocks.map((s) => `${s.ticker} (${s.subSector || s.sector})`).join(", ");
-      const allNews = roundNewsEventsRef.current.map((n) => n.headline).join(" | ");
+      const allNewsEvents = roundNewsEventsRef.current;
+      const priorNews = isUpdate ? allNewsEvents.slice(0, -1).map((n) => n.headline).join(" | ") : allNewsEvents.map((n) => n.headline).join(" | ");
 
       let enhancedPrompt = userSystemPrompt;
       if (isUpdate) {
         enhancedPrompt += `\n\nYou are managing a portfolio with $${userPortfolioRef.current.cash.toFixed(0)} cash.
 Current positions:\n${positionSummary}
 The stocks in this match are: ${tickers}
-ALL NEWS THIS ROUND: ${allNews}
-NEW NEWS: ${newsHeadline || "Market update"}
-How does this change your strategy? Recommend adjustments using exact tickers.`;
+${priorNews ? `PRIOR NEWS (already priced in): ${priorNews}` : ""}
+>>> NEW EVENT JUST DROPPED: ${newsHeadline || "Market update"} <<<
+Stock prices have NOT moved yet in response to this event. They will move in ~10 seconds.
+React to this NEW event. How does it change your strategy? Recommend adjustments using exact tickers.`;
       } else {
         enhancedPrompt += `\n\nYou are managing a portfolio. Current cash: $${userPortfolioRef.current.cash.toFixed(0)}.
 Current positions:\n${positionSummary}
 The ${currentStocks.length} securities in this match are: ${tickers}
-NEWS THIS ROUND: ${allNews || "No news yet"}
-You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80% of available capital across 3-5 positions.`;
+NEWS THIS ROUND: ${priorNews || "No news yet"}
+You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80% of capital. Only 2 securities — take concentrated positions.`;
       }
 
       // Map user strategy label to registry-compatible strategy key
@@ -423,10 +444,15 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
           userStrategy: mappedStrategy,
           customPrompt: customPrompt || undefined,
           stocks: stockData,
-          newsEvents: roundNewsEventsRef.current.map((n) => ({
+          newsEvents: allNewsEvents.map((n) => ({
             headline: n.headline,
             sectorImpacts: n.sectorImpacts,
           })),
+          latestEvent: isUpdate && newsHeadline ? {
+            headline: newsHeadline,
+            eventIndex: currentEventIndexRef.current,
+            newsType: allNewsEvents.length > 0 ? (allNewsEvents[allNewsEvents.length - 1].newsType || "unknown") : "unknown",
+          } : undefined,
           portfolio: {
             cash: userPortfolioRef.current.cash,
             positions: Object.fromEntries(
@@ -690,7 +716,7 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
     }
 
     console.log(`[TRADE-BATCH] ${batchContext.label} complete: ${executed} OK, ${failed} failed, ${skipped} skipped | cash=$${userPortfolioRef.current.cash.toFixed(0)}`);
-    logPortfolioSummary(`R${roundRef.current} ${batchContext.label}`);
+    logPortfolioSummary(batchContext.label);
 
     return { executed, failed, skipped, details };
   }, [executeOneTrade, logPortfolioSummary]);
@@ -769,7 +795,11 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
     const currentStocks = stocksRef.current;
     const tickers = currentStocks.map((s) => `${s.ticker} (${s.subSector || s.sector})`).join(", ");
     const positionSummary = buildPositionSummary(npc.portfolio, currentStocks);
-    const allNews = roundNewsEventsRef.current.map((n) => n.headline).join(" | ");
+
+    // Determine the latest event (the one traders should react to)
+    const allNewsEvents = roundNewsEventsRef.current;
+    const latestEvent = allNewsEvents.length > 0 ? allNewsEvents[allNewsEvents.length - 1] : null;
+    const priorNews = allNewsEvents.slice(0, -1).map((n) => n.headline).join(" | ");
 
     const stockData = currentStocks.map((s) => ({
       ticker: s.ticker, name: s.name, sector: s.sector, subSector: s.subSector,
@@ -779,10 +809,10 @@ You MUST make a decision on ALL ${currentStocks.length} securities. Deploy 60-80
     }));
 
     const enhancedPrompt = npc.systemPrompt + `\n\nThe ${currentStocks.length} securities in this match: ${tickers}
-NEWS THIS ROUND: ${allNews || "No news"}
+${priorNews ? `PRIOR NEWS (already priced in): ${priorNews}` : ""}
 Your cash: $${npc.portfolio.cash.toFixed(0)}
 Your positions:\n${positionSummary}
-You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capital across 3-5 positions. Be aggressive.`;
+You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capital. Only 2 securities — take concentrated positions. Be aggressive.`;
 
     try {
       const res = await fetch("/api/npc-trade", {
@@ -791,7 +821,13 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         body: JSON.stringify({
           agent: { name: npc.name, model: npc.model, strategy: npc.strategy, systemPrompt: enhancedPrompt, registryId: npc.registryId },
           stocks: stockData,
-          newsEvents: roundNewsEventsRef.current.map((n) => ({ headline: n.headline, sectorImpacts: n.sectorImpacts })),
+          newsEvents: allNewsEvents.map((n) => ({ headline: n.headline, sectorImpacts: n.sectorImpacts })),
+          latestEvent: latestEvent ? {
+            headline: latestEvent.headline,
+            eventIndex: currentEventIndexRef.current,
+            newsType: latestEvent.newsType || "unknown",
+            targetTicker: latestEvent.target_ticker || null,
+          } : null,
           portfolio: {
             cash: npc.portfolio.cash,
             positions: Object.fromEntries(
@@ -912,10 +948,10 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     }
   }, []);
 
-  // -- Apply a mid-round news event (shared helper) --
-  const applyMidRoundEvent = useCallback((event: NewsEvent) => {
-    // Stamp exit prices for all prior decisions before applying new event prices
-    stampExitPrices();
+  // -- Display event: add news to UI, trigger NPC trades + agent update (no price change yet) --
+  const displayEvent = useCallback((eventIndex: number, event: NewsEvent) => {
+    setCurrentEventIndex(eventIndex);
+    currentEventIndexRef.current = eventIndex;
 
     setRoundNewsEvents((prev) => [...prev, event]);
     roundNewsEventsRef.current = [...roundNewsEventsRef.current, event];
@@ -929,7 +965,30 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
 
     addEvent("news", event.headline);
 
-    // Apply price impact immediately via deterministic model
+    // Start pending price impact countdown (10s lag for traders to process)
+    setPendingPriceImpact({ eventIndex, event, countdown: PRICE_REACTION_DELAY });
+
+    // NPC reactive trades (3-8s delay, BEFORE prices move at 10s)
+    const npcList = npcsRef.current;
+    npcList.forEach((npc) => {
+      const delay = 3000 + Math.floor(Math.random() * 5000);
+      setTimeout(() => doNpcTrade(npc.id), delay);
+    });
+
+    fetchAgentStrategy(eventIndex === 0 ? false : true, event.headline);
+    setTimeout(() => fireArenaChatRef.current?.(event.headline), 1500);
+  }, [addEvent, doNpcTrade, fetchAgentStrategy]);
+
+  // -- Apply price impact: called 5s after event display --
+  const applyPriceImpact = useCallback((eventIndex: number) => {
+    const cached = prefetchedEventsRef.current.get(eventIndex);
+    if (!cached || !cached.event) return;
+    const event = cached.event;
+
+    // Stamp exit prices for all prior decisions before applying new prices
+    stampExitPrices();
+
+    // Apply price impact
     const beforePrices: Record<string, number> = {};
     for (const s of stocksRef.current) { beforePrices[s.ticker] = s.price; }
 
@@ -938,10 +997,10 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     setStocks(updatedStocks);
     setIndexValue(computeIndex(updatedStocks));
 
-    // PART 6: Console price verification
+    // Console price verification
     const eventLabel = event.newsType === "macro" ? "MACRO" : "COMPANY";
     const targetLabel = event.target_ticker ? ` (target: ${event.target_ticker})` : "";
-    console.log(`=== R${roundRef.current} ${eventLabel}: '${event.headline}'${targetLabel} ===`);
+    console.log(`=== E${eventIndex + 1} ${eventLabel}: '${event.headline}'${targetLabel} ===`);
     for (const s of updatedStocks) {
       const before = beforePrices[s.ticker] ?? s.startPrice;
       const actualPct = ((s.price - before) / before) * 100;
@@ -949,28 +1008,23 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       const intended = perStock?.[s.ticker];
       const intendedPct = intended != null ? intended * (Math.abs(intended) > 1 ? 1 : 100) : null;
       const match = intendedPct != null ? (Math.abs(actualPct - intendedPct) < 0.5 ? "\u2713" : "\u26A0") : "?";
-      const compoundNote = event.newsType === "company_specific" && Math.abs(actualPct) > 0.01 ? " [compounds on prior]" : "";
-      console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}${compoundNote}`);
+      console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}`);
     }
 
-    // Capture snapshot with explicit before/after prices
+    // Capture snapshot
     const afterPrices: Record<string, number> = {};
     for (const s of updatedStocks) { afterPrices[s.ticker] = s.price; }
     captureSnapshotEvent(event, beforePrices, afterPrices);
 
-    // NPC reactive trades
-    const npcList = npcsRef.current;
-    npcList.forEach((npc) => {
-      const delay = 2000 + Math.floor(Math.random() * 3000);
-      setTimeout(() => doNpcTrade(npc.id), delay);
-    });
+    // Clear pending price impact
+    setPendingPriceImpact(null);
 
-    fetchAgentStrategy(true, event.headline);
-    setTimeout(() => fireArenaChatRef.current?.(event.headline), 1500);
-  }, [addEvent, captureSnapshotEvent, doNpcTrade, fetchAgentStrategy, stampExitPrices]);
+    // Mark as applied
+    cached.status = "applied";
+  }, [captureSnapshotEvent, stampExitPrices]);
 
   // -- Fetch company news from registry agent --
-  const fetchCompanyNewsFromRegistry = useCallback(async (): Promise<{
+  const fetchCompanyNewsFromRegistry = useCallback(async (eventIndex: number): Promise<{
     headline: string; sectorImpacts: Record<string, number>; tickerAffected: string; category: string;
     severity?: string; direction?: string; per_stock_impacts?: Record<string, number>; reasoning?: string;
   } | null> => {
@@ -984,11 +1038,14 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
             ticker: s.ticker, name: s.name, sector: s.sector, subSector: s.subSector, beta: s.beta,
             peRatio: s.peRatio, marketCap: s.marketCap, eps: s.eps, debtEbitda: s.debtEbitda,
           })),
-          roundNumber: roundRef.current,
+          roundNumber: eventIndex + 1,
           usedTickers: usedCompanyTickersRef.current,
         }),
       });
       const data = await res.json();
+      if (data.usage?.total_tokens) {
+        addTokens("company_news", "Company News", "market", data.usage.total_tokens);
+      }
       if (!data.fallback && data.headline) {
         return {
           headline: data.headline,
@@ -1005,7 +1062,8 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       console.error("[useBattle] Company news API error:", err);
     }
     return null;
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTokens]);
 
   // -- Call Market Engine AI to determine stock price impacts for a news event --
   const callMarketEngine = useCallback(async (
@@ -1028,6 +1086,9 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
         }),
       });
       const data = await res.json();
+      if (data.usage?.total_tokens) {
+        addTokens("market_engine", "Market Engine", "market", data.usage.total_tokens);
+      }
       if (data.targets) {
         // Market Engine returns decimals (0.05 = +5%), convert to percentages for per_stock_impacts
         const impacts: Record<string, number> = {};
@@ -1042,18 +1103,96 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       console.error("[market-engine] API error, using news agent fallback:", err);
     }
     return null;
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTokens]);
 
-  // -- Fire mid-round news event — try AI company news agent first, fallback to hardcoded --
-  const fireMidRoundNews = useCallback((isCompany: boolean) => {
-    if (!isCompany) return;
+  // -- Used headlines ref for AI news deduplication --
+  const usedHeadlinesRef = useRef<string[]>([]);
 
-    (async () => {
-      // Try AI company news agent
-      const aiResult = await fetchCompanyNewsFromRegistry();
+  // -- Fetch macro news from registry agent --
+  const fetchMacroNewsFromRegistry = useCallback(async (eventIndex: number): Promise<{
+    headline: string; sectorImpacts: Record<string, number>; category: string;
+    severity?: string; direction?: string; per_stock_impacts?: Record<string, number>; reasoning?: string;
+  } | null> => {
+    try {
+      const currentStocks = stocksRef.current;
+      const res = await fetch("/api/macro-news", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stocks: currentStocks.map((s) => ({
+            ticker: s.ticker, name: s.name, sector: s.sector, beta: s.beta,
+            peRatio: s.peRatio, marketCap: s.marketCap, eps: s.eps, debtEbitda: s.debtEbitda,
+          })),
+          roundNumber: eventIndex + 1,
+          usedHeadlines: usedHeadlinesRef.current,
+        }),
+      });
+      const data = await res.json();
+      if (data.usage?.total_tokens) {
+        addTokens("macro_news", "Macro News", "market", data.usage.total_tokens);
+      }
+      if (!data.fallback && data.headline) {
+        usedHeadlinesRef.current = [...usedHeadlinesRef.current, data.headline];
+        return {
+          headline: data.headline,
+          sectorImpacts: data.sectorImpacts || {},
+          category: data.category,
+          severity: data.severity,
+          direction: data.direction,
+          per_stock_impacts: data.per_stock_impacts,
+          reasoning: data.reasoning,
+        };
+      }
+    } catch (err) {
+      console.error("[useBattle] Macro news API error:", err);
+    }
+    return null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTokens]);
+
+  // -- Prefetch event: async fetch news + market engine impacts, store in cache --
+  const prefetchEvent = useCallback(async (eventIndex: number) => {
+    const schedule = eventScheduleRef.current;
+    const entry = schedule[eventIndex];
+    if (!entry) return;
+
+    // Already fetching or ready?
+    if (prefetchedEventsRef.current.has(eventIndex)) return;
+    prefetchedEventsRef.current.set(eventIndex, { event: null, marketEngineImpacts: null, status: "fetching" });
+
+    console.log(`[PREFETCH] Starting prefetch for E${eventIndex + 1} (${entry.type})`);
+
+    let event: NewsEvent | null = null;
+
+    if (entry.type === "macro") {
+      // Try AI macro news agent first
+      const aiNews = await fetchMacroNewsFromRegistry(eventIndex);
+      if (aiNews) {
+        event = {
+          headline: aiNews.headline,
+          sectorImpacts: aiNews.sectorImpacts,
+          newsType: "macro" as const,
+          category: aiNews.category as NewsEvent["category"],
+          severity: (aiNews.severity as NewsEvent["severity"]) || undefined,
+          direction: aiNews.direction === "NEGATIVE" ? -1 : aiNews.direction === "POSITIVE" ? 1 : undefined,
+          per_stock_impacts: aiNews.per_stock_impacts,
+        };
+      } else {
+        // Fallback to hardcoded macro
+        console.log(`[PREFETCH] E${eventIndex + 1}: Falling back to hardcoded macro news`);
+        const result = pickMacroNews(usedMacroIndicesRef.current, eventIndex);
+        if (result) {
+          usedMacroIndicesRef.current = new Set([...Array.from(usedMacroIndicesRef.current), result.index]);
+          event = result.event;
+        }
+      }
+    } else {
+      // Company news
+      const aiResult = await fetchCompanyNewsFromRegistry(eventIndex);
       if (aiResult) {
         usedCompanyTickersRef.current = [...usedCompanyTickersRef.current, aiResult.tickerAffected];
-        const event: NewsEvent = {
+        event = {
           headline: aiResult.headline,
           sectorImpacts: aiResult.sectorImpacts,
           newsType: "company_specific" as const,
@@ -1063,30 +1202,34 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           target_ticker: aiResult.tickerAffected,
           per_stock_impacts: aiResult.per_stock_impacts,
         };
-        // Call Market Engine AI to determine price impacts
-        const meTargets = await callMarketEngine(event.headline, stocksRef.current, event.sectorImpacts);
-        if (meTargets) {
-          console.log(`[market-engine] Overriding company news per_stock_impacts with Market Engine AI`);
-          event.per_stock_impacts = meTargets;
+      } else {
+        // Fallback to hardcoded company
+        console.log(`[PREFETCH] E${eventIndex + 1}: Falling back to hardcoded company news`);
+        const result = generateCompanyNews(stocksRef.current, usedCompanyTickersRef.current, eventIndex);
+        if (result) {
+          usedCompanyTickersRef.current = [...usedCompanyTickersRef.current, result.tickerAffected];
+          event = result.event;
         }
-        applyMidRoundEvent(event);
-        return;
       }
+    }
 
-      // Fallback to hardcoded with round-based escalation
-      console.log("[useBattle] Falling back to hardcoded behavior for Company News Agent");
-      const result = generateCompanyNews(stocksRef.current, usedCompanyTickersRef.current, roundRef.current);
-      if (!result) return;
-      usedCompanyTickersRef.current = [...usedCompanyTickersRef.current, result.tickerAffected];
-      // Call Market Engine AI even for fallback events
-      const meTargets = await callMarketEngine(result.event.headline, stocksRef.current, result.event.sectorImpacts);
-      if (meTargets) {
-        console.log(`[market-engine] Overriding fallback news per_stock_impacts with Market Engine AI`);
-        result.event.per_stock_impacts = meTargets;
-      }
-      applyMidRoundEvent(result.event);
-    })();
-  }, [applyMidRoundEvent, callMarketEngine, fetchCompanyNewsFromRegistry]);
+    if (!event) {
+      console.warn(`[PREFETCH] E${eventIndex + 1}: No event generated`);
+      prefetchedEventsRef.current.set(eventIndex, { event: null, marketEngineImpacts: null, status: "ready" });
+      return;
+    }
+
+    // Call Market Engine AI for price impacts
+    const meTargets = await callMarketEngine(event.headline, stocksRef.current, event.sectorImpacts);
+    if (meTargets) {
+      console.log(`[PREFETCH] E${eventIndex + 1}: Market Engine AI impacts ready`);
+      event.per_stock_impacts = meTargets;
+    }
+
+    prefetchedEventsRef.current.set(eventIndex, { event, marketEngineImpacts: meTargets, status: "ready" });
+    console.log(`[PREFETCH] E${eventIndex + 1} ready: "${event.headline}"`);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callMarketEngine, fetchCompanyNewsFromRegistry, fetchMacroNewsFromRegistry]);
 
   // -- User trade execution (manual) --
   // Manual trade: user clicks LONG/SHORT/CLOSE on stock card — uses same executeOneTrade
@@ -1197,12 +1340,12 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     npcList.forEach((npc, i) => {
       const delay = 1000 + i * 1500;
       setTimeout(() => {
-        if (phaseRef.current !== "trading" && phaseRef.current !== "pre_round") return;
+        if (phaseRef.current !== "trading" && phaseRef.current !== "countdown") return;
         fetchArenaChat({ name: npc.name, model: npc.model, strategy: npc.strategy, systemPrompt: npc.systemPrompt }, headline, false);
       }, delay);
     });
     setTimeout(() => {
-      if (phaseRef.current !== "trading" && phaseRef.current !== "pre_round") return;
+      if (phaseRef.current !== "trading" && phaseRef.current !== "countdown") return;
       fetchArenaChat({ name: userName, model: userModelId, strategy: userStrategy, systemPrompt: userSystemPrompt }, headline, true);
     }, 1000 + npcList.length * 1500);
   }, [fetchArenaChat, userName, userModelId, userStrategy, userSystemPrompt]);
@@ -1247,8 +1390,8 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       agentPnls.push({ name: npc.name, model: getModelLabel(npc.model), strategy: npc.strategyLabel, roundPnl: npcValue - STARTING_CASH, totalPnl: npcValue - STARTING_CASH });
     }
 
-    // PART 6: Console P&L summary at end of each round
-    console.log(`[P&L] === R${roundRef.current} END === User: roundP&L=${userRoundPnl >= 0 ? "+" : ""}$${userRoundPnl.toFixed(0)}, totalP&L=${userTotalPnl >= 0 ? "+" : ""}$${userTotalPnl.toFixed(0)}, value=$${userValue.toFixed(0)}, cash=$${userPortfolioRef.current.cash.toFixed(0)}`);
+    // Console P&L summary at session end
+    console.log(`[P&L] === SESSION END === User: P&L=${userRoundPnl >= 0 ? "+" : ""}$${userRoundPnl.toFixed(0)}, totalP&L=${userTotalPnl >= 0 ? "+" : ""}$${userTotalPnl.toFixed(0)}, value=$${userValue.toFixed(0)}, cash=$${userPortfolioRef.current.cash.toFixed(0)}`);
     console.log(`[P&L]   Open positions: ${Object.entries(userPortfolioRef.current.positions).map(([t, p]) => {
       const s = currentStocks.find(st => st.ticker === t);
       const pnl = s ? (p.side === "long" ? (s.price - p.avgCost) * p.qty : (p.avgCost - s.price) * p.qty) : 0;
@@ -1294,69 +1437,35 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     });
   }, [userName, userModelLabel, userStrategy, finalizeSnapshot]);
 
-  // -- Used headlines ref for AI news deduplication --
-  const usedHeadlinesRef = useRef<string[]>([]);
-
-  // -- Fetch macro news from registry agent --
-  const fetchMacroNewsFromRegistry = useCallback(async (): Promise<{
-    headline: string; sectorImpacts: Record<string, number>; category: string;
-    severity?: string; direction?: string; per_stock_impacts?: Record<string, number>; reasoning?: string;
-  } | null> => {
-    try {
-      const currentStocks = stocksRef.current;
-      const res = await fetch("/api/macro-news", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          stocks: currentStocks.map((s) => ({
-            ticker: s.ticker, name: s.name, sector: s.sector, beta: s.beta,
-            peRatio: s.peRatio, marketCap: s.marketCap, eps: s.eps, debtEbitda: s.debtEbitda,
-          })),
-          roundNumber: roundRef.current,
-          usedHeadlines: usedHeadlinesRef.current,
-        }),
-      });
-      const data = await res.json();
-      if (!data.fallback && data.headline) {
-        usedHeadlinesRef.current = [...usedHeadlinesRef.current, data.headline];
-        return {
-          headline: data.headline,
-          sectorImpacts: data.sectorImpacts || {},
-          category: data.category,
-          severity: data.severity,
-          direction: data.direction,
-          per_stock_impacts: data.per_stock_impacts,
-          reasoning: data.reasoning,
-        };
-      }
-    } catch (err) {
-      console.error("[useBattle] Macro news API error:", err);
-    }
-    return null;
-  }, []);
-
-  // -- Phase: pre_round --
+  // -- Phase: countdown (10s before trading) --
   useEffect(() => {
-    if (phase !== "pre_round") return;
+    if (phase !== "countdown") return;
 
-    // PART 2+3: Immediately clear stale news & impacts so nothing leaks across rounds
+    // Initialize all session state
     setRoundNewsEvents([]);
     roundNewsEventsRef.current = [];
     setCurrentNewsImpacts({});
     currentNewsImpactsRef.current = {};
+    setCurrentEventIndex(-1);
+    setPendingPriceImpact(null);
+    setNextEventCountdown(null);
+    prefetchedEventsRef.current = new Map();
+    firedEventsRef.current = new Set();
+    firedPriceImpactsRef.current = new Set();
+    firedPrefetchesRef.current = new Set();
 
     roundStartValueRef.current = computeTotalValue(userPortfolioRef.current, stocksRef.current);
     roundStartTradeIndexRef.current = userTradesRef.current.length;
 
-    // Record round start prices for retro
+    // Record start prices for retro
     const priceSnap: Record<string, number> = {};
     for (const s of stocksRef.current) { priceSnap[s.ticker] = s.price; }
     roundStartPricesRef.current = priceSnap;
     roundTradesRef.current = new Map();
 
-    // Initialize round snapshot
+    // Initialize session snapshot
     currentSnapshotRef.current = {
-      round,
+      round: 1,
       pricesAtStart: { ...priceSnap },
       events: [],
       pricesAtEnd: {},
@@ -1364,73 +1473,25 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     };
     lastSnapshotPricesRef.current = { ...priceSnap };
 
-    midRoundNewsFiredRef.current = new Set();
-    firedNpcTradeKeysRef.current = new Set();
     usedCompanyTickersRef.current = [];
-
     setAgentStrategy(null);
     setAgentAdjustments([]);
     setStrategyExecuted(false);
 
-    // Generate macro news during countdown (prices stay FROZEN — applied at trading open)
-    (async () => {
-      const aiNews = await fetchMacroNewsFromRegistry();
-      if (aiNews) {
-        const event: NewsEvent = {
-          headline: aiNews.headline,
-          sectorImpacts: aiNews.sectorImpacts,
-          newsType: "macro" as const,
-          category: aiNews.category as NewsEvent["category"],
-          severity: (aiNews.severity as NewsEvent["severity"]) || undefined,
-          direction: aiNews.direction === "NEGATIVE" ? -1 : aiNews.direction === "POSITIVE" ? 1 : undefined,
-          per_stock_impacts: aiNews.per_stock_impacts,
-        };
-        setRoundNewsEvents([event]);
-        setCurrentNewsImpacts(event.sectorImpacts);
-        currentNewsImpactsRef.current = event.sectorImpacts;
-        roundNewsEventsRef.current = [event];
-        addEvent("news", event.headline);
-        // NOTE: No price application or snapshot here — prices frozen during countdown
-        // Snapshot captured at trading open after prices are applied
-      } else {
-        // Fallback to hardcoded macro news with round-based escalation
-        console.log("[useBattle] Falling back to hardcoded behavior for Macro News Agent");
-        const newsResult = pickMacroNews(usedMacroIndicesRef.current, round);
-        if (newsResult) {
-          const nextIndices = new Set(Array.from(usedMacroIndicesRef.current));
-          nextIndices.add(newsResult.index);
-          usedMacroIndicesRef.current = nextIndices;
-          setRoundNewsEvents([newsResult.event]);
-          setCurrentNewsImpacts(newsResult.event.sectorImpacts);
-          currentNewsImpactsRef.current = newsResult.event.sectorImpacts;
-          roundNewsEventsRef.current = [newsResult.event];
-          addEvent("news", newsResult.event.headline);
-          // NOTE: No price application or snapshot here — prices frozen during countdown
-          // Snapshot captured at trading open after prices are applied
-        } else {
-          setRoundNewsEvents([]);
-          setCurrentNewsImpacts({});
-          currentNewsImpactsRef.current = {};
-        }
-      }
-    })();
+    // Prefetch Event 1 during countdown
+    prefetchEvent(0);
 
-    npcScheduleRef.current = scheduleNpcTrades(npcsRef.current);
-    const tradeIdx: Record<string, number> = {};
-    for (const npc of npcsRef.current) { tradeIdx[npc.id] = 0; }
-    npcTradeIndexRef.current = tradeIdx;
+    console.log(`[SESSION] === COUNTDOWN === ${INITIAL_COUNTDOWN}s before trading`);
 
-    console.log(`[ROUND] === PRE-ROUND R${round}/${TOTAL_ROUNDS} === countdown=${COUNTDOWN_DURATION}s`);
-
-    setCountdown(COUNTDOWN_DURATION);
+    setCountdown(INITIAL_COUNTDOWN);
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
           setTradingTimeLeft(TRADING_DURATION);
           setPhase("trading");
-          addEvent("system", `Round ${round} \u2014 Trading is open!`);
-          console.log(`[ROUND] === TRADING OPEN R${round}/${TOTAL_ROUNDS} === duration=${TRADING_DURATION}s`);
+          addEvent("system", "Trading is open!");
+          console.log(`[SESSION] === TRADING OPEN === duration=${TRADING_DURATION}s, ${NUM_EVENTS} events`);
           return 0;
         }
         return prev - 1;
@@ -1439,71 +1500,15 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
 
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, round]);
+  }, [phase]);
 
-  // -- Phase: trading --
+  // -- Phase: trading — single continuous session with event schedule --
   useEffect(() => {
     if (phase !== "trading") return;
 
-    // Apply macro news to prices at trading open (prices were frozen during countdown)
-    // Call Market Engine AI to determine price impacts, then apply
-    const macroEvents = roundNewsEventsRef.current;
-    if (macroEvents.length > 0) {
-      const macroEvent = macroEvents[0];
+    const schedule = eventScheduleRef.current;
 
-      // Call Market Engine AI, then apply prices (whether ME succeeds or falls back to news agent impacts)
-      callMarketEngine(macroEvent.headline, stocksRef.current, macroEvent.sectorImpacts).then(meTargets => {
-        if (meTargets) {
-          console.log(`[market-engine] Overriding macro news per_stock_impacts with Market Engine AI`);
-          macroEvent.per_stock_impacts = meTargets;
-          roundNewsEventsRef.current = [macroEvent];
-          setRoundNewsEvents([macroEvent]);
-        }
-
-        // PART 6: Capture before prices for logging
-        const beforePrices: Record<string, number> = {};
-        for (const s of stocksRef.current) { beforePrices[s.ticker] = s.price; }
-
-        const { stocks: updatedStocks } = applyNewsToPrice(stocksRef.current, macroEvent);
-        stocksRef.current = updatedStocks;
-        setStocks(updatedStocks);
-        setIndexValue(computeIndex(updatedStocks));
-
-        // PART 6: Console price verification for macro at trading open
-        console.log(`=== R${roundRef.current} MACRO (trading open): '${macroEvent.headline}' ===`);
-        for (const s of updatedStocks) {
-          const before = beforePrices[s.ticker] ?? s.startPrice;
-          const actualPct = ((s.price - before) / before) * 100;
-          const perStock = macroEvent.per_stock_impacts;
-          const intended = perStock?.[s.ticker];
-          const intendedPct = intended != null ? intended * (Math.abs(intended) > 1 ? 1 : 100) : null;
-          const match = intendedPct != null ? (Math.abs(actualPct - intendedPct) < 0.5 ? "\u2713" : "\u26A0") : "?";
-          console.log(`  ${s.ticker}: $${before.toFixed(2)} \u2192 $${s.price.toFixed(2)} (intended: ${intendedPct != null ? (intendedPct >= 0 ? "+" : "") + intendedPct.toFixed(1) + "%" : "N/A"}, actual: ${actualPct >= 0 ? "+" : ""}${actualPct.toFixed(2)}%) ${match}`);
-        }
-
-        // Capture snapshot with correct before/after prices (moved from pre_round)
-        const afterPrices: Record<string, number> = {};
-        for (const s of updatedStocks) { afterPrices[s.ticker] = s.price; }
-        captureSnapshotEvent(macroEvent, beforePrices, afterPrices);
-
-        fetchAgentStrategy(false);
-
-        if (roundNewsEventsRef.current.length > 0) {
-          setTimeout(() => fireArenaChats(roundNewsEventsRef.current[0].headline), 3000);
-        }
-      });
-    } else {
-      fetchAgentStrategy(false);
-    }
-
-    const npcList = npcsRef.current;
-    const initialTimers: ReturnType<typeof setTimeout>[] = [];
-    npcList.forEach((npc, i) => {
-      const delay = 2000 + i * 1500 + Math.floor(Math.random() * 2000);
-      const timer = setTimeout(() => doNpcTrade(npc.id), delay);
-      initialTimers.push(timer);
-    });
-
+    // Main 1-second timer loop — drives the entire event schedule
     const timerInterval = setInterval(() => {
       setTradingTimeLeft((prev) => {
         if (prev <= 1) {
@@ -1511,16 +1516,69 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
           return 0;
         }
 
-        const elapsed = TRADING_DURATION - (prev - 1);
-        const newsTimes = [20, 40];
-        for (const t of newsTimes) {
-          if (elapsed >= t && elapsed < t + 2 && !midRoundNewsFiredRef.current.has(t)) {
-            midRoundNewsFiredRef.current.add(t);
-            fireMidRoundNews(true);
+        const newTimeLeft = prev - 1;
+        const elapsed = TRADING_DURATION - newTimeLeft;
+
+        // --- Prefetch check ---
+        for (const entry of schedule) {
+          if (elapsed >= entry.prefetchTime && !firedPrefetchesRef.current.has(entry.index)) {
+            firedPrefetchesRef.current.add(entry.index);
+            prefetchEvent(entry.index);
           }
         }
 
-        return prev - 1;
+        // --- Display check ---
+        for (const entry of schedule) {
+          if (elapsed >= entry.time && !firedEventsRef.current.has(entry.index)) {
+            const cached = prefetchedEventsRef.current.get(entry.index);
+            if (cached && cached.status === "ready" && cached.event) {
+              firedEventsRef.current.add(entry.index);
+              displayEvent(entry.index, cached.event);
+            } else if (!cached || cached.status !== "fetching") {
+              // Event wasn't prefetched yet (maybe first event), trigger now
+              if (!firedPrefetchesRef.current.has(entry.index)) {
+                firedPrefetchesRef.current.add(entry.index);
+                prefetchEvent(entry.index);
+              }
+            }
+            // If still fetching, we'll catch it next tick
+          }
+        }
+
+        // --- Price impact check ---
+        for (const entry of schedule) {
+          if (elapsed >= entry.priceImpactTime && !firedPriceImpactsRef.current.has(entry.index)) {
+            const cached = prefetchedEventsRef.current.get(entry.index);
+            if (cached && cached.status === "ready" && cached.event && firedEventsRef.current.has(entry.index)) {
+              firedPriceImpactsRef.current.add(entry.index);
+              applyPriceImpact(entry.index);
+            }
+          }
+        }
+
+        // --- UI countdown updates ---
+        // Next event countdown
+        let nextEvtCountdown: number | null = null;
+        for (const entry of schedule) {
+          if (!firedEventsRef.current.has(entry.index)) {
+            const remaining = entry.time - elapsed;
+            if (remaining > 0 && remaining <= 10) {
+              nextEvtCountdown = remaining;
+            }
+            break; // only show the next upcoming event
+          }
+        }
+        setNextEventCountdown(nextEvtCountdown);
+
+        // Decrement pending price impact countdown
+        setPendingPriceImpact((current) => {
+          if (!current) return null;
+          const newCountdown = current.countdown - 1;
+          if (newCountdown <= 0) return null; // will be cleared by applyPriceImpact
+          return { ...current, countdown: newCountdown };
+        });
+
+        return newTimeLeft;
       });
     }, 1000);
 
@@ -1533,17 +1591,44 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       setIndexValue(computeIndex(updatedStocks));
     }, TICK_INTERVAL * 1000);
 
+    // End check
     const endCheck = setInterval(() => {
       if (tradingTimeRef.current <= 0) {
         clearInterval(endCheck);
         clearInterval(timerInterval);
         clearInterval(tickInterval);
-        console.log(`[ROUND] === TRADING END R${roundRef.current}/${TOTAL_ROUNDS} ===`);
-        addEvent("system", `Round ${roundRef.current} complete \u2014 Trading paused.`);
-        stampExitPrices(); // stamp exit prices for remaining decisions at round end
+        console.log(`[SESSION] === TRADING END === ${NUM_EVENTS} events completed`);
+        addEvent("system", "Match complete \u2014 Trading closed.");
+        stampExitPrices();
         captureRoundRetro();
-        setPhase("round_end");
-        setCountdown(ROUND_END_DURATION);
+
+        // Enrich decisions with P&L and correctness for retro screen
+        const finalStocksForRetro = stocksRef.current;
+        const enriched = decisionsRef.current.map((d) => {
+          const stock = finalStocksForRetro.find((s) => s.ticker === d.ticker);
+          if (!stock) return d;
+          const exitPrice = d.exitPrice ?? stock.price;
+          let pnlFromTrade: number | undefined;
+          let wasCorrect: number | undefined;
+          if (d.actionTaken === "LONG") {
+            pnlFromTrade = Math.round(((exitPrice - d.price) / d.price) * 10000) / 100;
+            wasCorrect = exitPrice > d.price ? 1 : 0;
+          } else if (d.actionTaken === "SHORT") {
+            pnlFromTrade = Math.round(((d.price - exitPrice) / d.price) * 10000) / 100;
+            wasCorrect = exitPrice < d.price ? 1 : 0;
+          }
+          return { ...d, exitPrice, pnlFromTrade, wasCorrect };
+        });
+        setEnrichedDecisions(enriched);
+
+        // Compute per-agent successful trades
+        const stMap = new Map<string, number>();
+        for (const d of enriched) {
+          if (d.wasCorrect === 1) stMap.set(d.agentName, (stMap.get(d.agentName) || 0) + 1);
+        }
+        setSuccessfulTradesMap(stMap);
+
+        setPhase("match_retro");
       }
     }, 200);
 
@@ -1551,38 +1636,11 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       clearInterval(timerInterval);
       clearInterval(tickInterval);
       clearInterval(endCheck);
-      initialTimers.forEach((t) => clearTimeout(t));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // -- Phase: round_end --
-  useEffect(() => {
-    if (phase !== "round_end") return;
-
-    console.log(`[ROUND] === ROUND_END R${round}/${TOTAL_ROUNDS} === cooldown=${ROUND_END_DURATION}s`);
-
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          if (round >= TOTAL_ROUNDS) {
-            console.log(`[ROUND] === MATCH COMPLETE === All ${TOTAL_ROUNDS} rounds finished, entering match_retro`);
-            setPhase("match_retro");
-          } else {
-            const nextRound = round + 1;
-            console.log(`[ROUND] === ADVANCING R${round} → R${nextRound} ===`);
-            setRound((r) => r + 1);
-            setPhase("pre_round");
-          }
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [phase, round]);
+  // -- Phase: round_end removed — single continuous session goes directly to match_retro --
 
   // -- Save match results (on results phase) --
   useEffect(() => {
@@ -1616,7 +1674,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        numRounds: TOTAL_ROUNDS,
+        numRounds: 1,
         matchType: currentStandings.length === 1 ? "solo" : currentStandings.length === 2 ? "head_to_head" : "battle",
         stockTickers: finalStocks.map((s) => s.ticker),
         agents: currentStandings.map((s, i) => ({
@@ -1644,7 +1702,7 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
   const userPnlPct = Math.round(((userTotalValue - STARTING_CASH) / STARTING_CASH) * 10000) / 10000;
   const roundPnl = Math.round((userTotalValue - roundStartValueRef.current) * 100) / 100;
   const roundTradeCount = userTrades.length - roundStartTradeIndexRef.current;
-  const standings = computeStandings(userName, userPortfolio, npcs, stocks, userModelLabel, userStrategy, userTrades.length);
+  const standings = computeStandings(userName, userPortfolio, npcs, stocks, userModelLabel, userStrategy, userTrades.length, successfulTradesMap);
   standingsRef.current = standings;
   const { best: bestTrade, worst: worstTrade } = computeBestWorstTrade(userTrades, stocks);
 
@@ -1709,9 +1767,16 @@ You MUST decide on ALL ${currentStocks.length} securities. Deploy 60-80% of capi
     // NPC trade flashes + token usage
     recentNpcTrades,
     tokenUsage,
+    // Scorecard
+    successfulTradesMap,
     // Retro
     retroRounds,
     roundSnapshots,
+    enrichedDecisions,
     dismissRetro,
+    // Event schedule state
+    currentEventIndex,
+    pendingPriceImpact,
+    nextEventCountdown,
   };
 }

@@ -174,7 +174,7 @@ export function generateMatchStocks(): StockProfile[] {
   const usedNames = new Set<string>();
   const stocks: StockProfile[] = [];
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 1; i++) {
     // Pick a random sector — truly random, could repeat
     const sector = pick(SECTORS);
     const params = SECTOR_PARAMS[sector];
@@ -243,6 +243,22 @@ export function generateMatchStocks(): StockProfile[] {
       debtEbitda,
     });
   }
+
+  // Add fake SPY as 2nd stock
+  stocks.push({
+    name: "S&P 500 ETF",
+    ticker: "SPY",
+    sector: "index",
+    subSector: "Market Index",
+    beta: 1.0,
+    volatility: 0.012,
+    startPrice: 580.50,
+    marketCap: "$500B+",
+    capCategory: "Large",
+    eps: 23.22,
+    peRatio: 22.0,
+    debtEbitda: 0,
+  });
 
   return stocks;
 }

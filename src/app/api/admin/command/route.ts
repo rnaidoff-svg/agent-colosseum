@@ -18,6 +18,81 @@ import { parseAIResponse } from "@/lib/utils/parseAIResponse";
 
 const FALLBACK_MODEL = "anthropic/claude-opus-4.6";
 
+// ============================================================
+// Soldier Self-Write: Templates & System Prompts
+// ============================================================
+
+const TRADING_SOLDIER_TEMPLATE = `You are "[NAME]" — [identity]
+
+MATCH FORMAT: 2 securities only (1 S&P 500 stock + SPY). Take concentrated positions.
+
+DECISION FRAMEWORK:
+1. [Step 1]
+2. [Step 2]
+3. [Step 3]
+[3-6 steps total, unique to this strategy]
+
+POSITION SIZING:
+- [deployment % rule]
+- [concentration rule]
+- [cash reserve rule]
+
+WHEN TO CLOSE:
+- [exit trigger 1]
+- [exit trigger 2]
+- [exit trigger 3]
+
+[Optional: strategy-specific rules section]
+
+TRADE REASON FORMAT: "[template connecting news to trade]"
+
+PERSONALITY: [persona description — distinctive voice, attitude, catchphrases]`;
+
+const TRADING_SOLDIER_SELF_WRITE_SYSTEM = `You are rewriting your own trading agent prompt based on guidance from your Lieutenant.
+
+YOUR CURRENT PROMPT:
+---
+{current_prompt}
+---
+
+LIEUTENANT'S GUIDANCE:
+---
+{guidance}
+---
+
+REQUIRED TEMPLATE STRUCTURE (you MUST follow this exactly):
+---
+${TRADING_SOLDIER_TEMPLATE}
+---
+
+RULES:
+- Output ONLY the new prompt text. No JSON, no code fences, no commentary.
+- Follow the template structure exactly — include all sections.
+- Apply the Lieutenant's guidance to transform your prompt.
+- Maintain your unique personality and voice unless told to change it.
+- Keep the MATCH FORMAT line as-is (2 securities, concentrated positions).
+- Do NOT include JSON format instructions, stock data, or portfolio info — the API provides those.
+- The prompt should be self-contained and complete.`;
+
+const MARKET_SOLDIER_SELF_WRITE_SYSTEM = `You are rewriting your own market agent prompt based on guidance from your Lieutenant.
+
+YOUR CURRENT PROMPT:
+---
+{current_prompt}
+---
+
+LIEUTENANT'S GUIDANCE:
+---
+{guidance}
+---
+
+RULES:
+- Output ONLY the new prompt text. No JSON, no code fences, no commentary.
+- Maintain your existing structure and JSON output format — your output format is critical for the system to work.
+- Apply the Lieutenant's guidance to modify your behavior, tone, or parameters.
+- Keep all required JSON response fields intact.
+- The prompt should be self-contained and complete.`;
+
 async function callOpenRouter(
   apiKey: string,
   model: string,
@@ -352,7 +427,7 @@ export async function POST(request: NextRequest) {
     console.log(`[DEBUG STEP 3] Sending to ${lieutenant.name} (${lieutenantId}) — model: ${ltModel}, system prompt: ${ltSystemPrompt.length} chars, soldier context: ${ltContext.length} chars`);
     const ltResult = await callOpenRouter(apiKey, ltModel, [
       { role: "system", content: ltSystemPrompt },
-      { role: "user", content: `Order from The General:\n\n${ltOrder}\n\nOriginal commander request: "${message}"\n\nGenerate the complete updated prompts for affected soldiers.` },
+      { role: "user", content: `Order from The General:\n\n${ltOrder}\n\nOriginal commander request: "${message}"\n\nProvide guidance for affected soldiers to rewrite their own prompts. Include what to change and why, but do NOT write the complete prompt yourself — the soldiers will do that.` },
     ], 3000, 0.7);
 
     if (!ltResult.content) {
@@ -379,7 +454,7 @@ export async function POST(request: NextRequest) {
 
     // Step 4: Parse proposed changes from Lieutenant's response
     console.log(`[DEBUG STEP 4] Parsing proposed changes from Lieutenant's response...`);
-    let proposedChanges: { agent_id: string; agent_name: string; what_changed: string; new_prompt: string; new_name?: string; new_description?: string; description?: string }[] = [];
+    let proposedChanges: { agent_id: string; agent_name: string; what_changed: string; new_prompt: string; guidance?: string; new_name?: string; new_description?: string; description?: string }[] = [];
     let parseMethod = "none";
     try {
       const parsed = parseAIResponse(ltResult.content, { requiredKey: "changes" });
@@ -387,12 +462,13 @@ export async function POST(request: NextRequest) {
         console.log(`[DEBUG STEP 4] Parsed JSON with "changes" key via parseAIResponse`);
         if (Array.isArray(parsed.changes)) {
           proposedChanges = parsed.changes
-            .filter((c: Record<string, unknown>) => c.agent_id && c.new_prompt)
+            .filter((c: Record<string, unknown>) => c.agent_id && (c.new_prompt || c.newPrompt || c.guidance))
             .map((c: Record<string, unknown>) => ({
               agent_id: c.agent_id as string,
               agent_name: (c.agent_name || c.agentName || c.agent_id) as string,
               what_changed: (c.what_changed || c.whatChanged || "Updated") as string,
-              new_prompt: (c.new_prompt || c.newPrompt) as string,
+              new_prompt: (c.new_prompt || c.newPrompt || "") as string,
+              guidance: (c.guidance as string) || undefined,
               new_name: (c.new_name || c.newName) as string | undefined,
               new_description: (c.new_description || c.newDescription || c.description) as string | undefined,
             }));
@@ -538,8 +614,70 @@ export async function POST(request: NextRequest) {
       console.log(`[DEBUG STEP 4] Lieutenant response preview: ${ltResult.content.slice(0, 500)}`);
     }
     proposedChanges.forEach((c, i) => {
-      console.log(`[DEBUG STEP 4] Change ${i + 1}: ${c.agent_id} (${c.agent_name}) — ${c.what_changed} — prompt: ${c.new_prompt.length} chars`);
+      console.log(`[DEBUG STEP 4] Change ${i + 1}: ${c.agent_id} (${c.agent_name}) — ${c.what_changed} — prompt: ${c.new_prompt.length} chars${c.guidance ? ` — guidance: ${c.guidance.length} chars` : ""}`);
     });
+
+    // Step 4.5: Soldier Self-Write — soldiers with guidance but no new_prompt write their own prompts
+    const selfWriteChanges = proposedChanges.filter(c => c.guidance && !c.new_prompt);
+    if (selfWriteChanges.length > 0) {
+      console.log(`[DEBUG STEP 4.5] Soldier Self-Write: ${selfWriteChanges.length} soldiers need to write their own prompts`);
+      const allAgentsForSelfWrite = getAllAgents();
+      const agentMapForSelfWrite = new Map(allAgentsForSelfWrite.map(a => [a.id, a]));
+
+      const selfWriteResults = await Promise.all(
+        selfWriteChanges.map(async (change) => {
+          const soldier = agentMapForSelfWrite.get(change.agent_id);
+          if (!soldier) {
+            console.error(`[DEBUG STEP 4.5] Agent "${change.agent_id}" not found — skipping self-write`);
+            return { change, success: false };
+          }
+
+          const soldierModel = getEffectiveModel(change.agent_id);
+          const currentPrompt = soldier.system_prompt;
+          const isTradingSoldier = soldier.type === "trading";
+
+          // Pick the right self-write system prompt
+          const systemTemplate = isTradingSoldier
+            ? TRADING_SOLDIER_SELF_WRITE_SYSTEM
+            : MARKET_SOLDIER_SELF_WRITE_SYSTEM;
+
+          const systemPrompt = systemTemplate
+            .replace("{current_prompt}", currentPrompt)
+            .replace("{guidance}", change.guidance!);
+
+          console.log(`[DEBUG STEP 4.5] Calling ${soldier.name} (${change.agent_id}) — model: ${soldierModel}, type: ${soldier.type}, guidance: ${change.guidance!.length} chars`);
+
+          const result = await callOpenRouter(apiKey, soldierModel, [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: "Rewrite your prompt now based on the Lieutenant's guidance. Output ONLY the new prompt text." },
+          ], 2000, 0.5);
+
+          if (!result.content) {
+            console.error(`[DEBUG STEP 4.5] ${soldier.name} self-write FAILED: ${result.error}`);
+            return { change, success: false };
+          }
+
+          // Strip code fences if present
+          let newPrompt = result.content.trim();
+          newPrompt = newPrompt.replace(/^```[\w]*\n?/, "").replace(/\n?```$/, "").trim();
+
+          console.log(`[DEBUG STEP 4.5] ${soldier.name} self-wrote prompt: ${newPrompt.length} chars`);
+          change.new_prompt = newPrompt;
+          return { change, success: true };
+        })
+      );
+
+      // Remove failed self-writes (changes with empty new_prompt)
+      const failedIds = selfWriteResults
+        .filter(r => !r.success)
+        .map(r => r.change.agent_id);
+      if (failedIds.length > 0) {
+        console.log(`[DEBUG STEP 4.5] Removing ${failedIds.length} failed self-writes: ${failedIds.join(", ")}`);
+        proposedChanges = proposedChanges.filter(c => !failedIds.includes(c.agent_id));
+      }
+
+      console.log(`[DEBUG STEP 4.5] Soldier Self-Write complete. ${selfWriteResults.filter(r => r.success).length}/${selfWriteChanges.length} succeeded.`);
+    }
 
     // Step 5: Build soldier updates with old prompts + acknowledgments
     console.log(`[DEBUG STEP 5] Building soldier updates for ${proposedChanges.length} changes...`);
@@ -552,8 +690,10 @@ export async function POST(request: NextRequest) {
       if (!agent) {
         console.log(`[DEBUG STEP 5] WARNING: Agent "${c.agent_id}" not found in database — soldier update will show "(not found)"`);
       }
-      // Generate a template acknowledgment (no API call to save cost)
-      const ack = `Copy that, Lieutenant. ${c.what_changed}. Prompt updated and ready for deployment.`;
+      // Generate acknowledgment — self-written prompts get a different message
+      const ack = c.guidance
+        ? `Understood, Lieutenant. I've rewritten my own prompt based on your guidance: ${c.what_changed}. Ready for deployment.`
+        : `Copy that, Lieutenant. ${c.what_changed}. Prompt updated and ready for deployment.`;
       return {
         agentId: c.agent_id,
         agentName: c.agent_name || agent?.name || c.agent_id,

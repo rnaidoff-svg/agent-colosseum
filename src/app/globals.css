@@ -60,6 +60,15 @@ body {
   animation: trade-flash 2s ease-out;
 }
 
+@keyframes price-impact-pulse {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; transform: scale(1.02); }
+}
+
+.animate-price-impact-pulse {
+  animation: price-impact-pulse 1s ease-in-out infinite;
+}
+
 /* Hide scrollbar but allow scrolling */
 .no-scrollbar {
   -ms-overflow-style: none;

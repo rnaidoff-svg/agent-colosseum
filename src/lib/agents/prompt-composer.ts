@@ -88,7 +88,8 @@ export function getEffectivePrompt(agentId: string): {
  */
 export function getAgentTree(): AgentTreeNode[] {
   try {
-    const agents = getAllAgents();
+    const allAgents = getAllAgents();
+    const agents = allAgents.filter(a => a.is_active === 1);
     const fallbackModel = getSystemConfig("system_model") || "anthropic/claude-opus-4.6";
 
     const nodeMap = new Map<string, AgentTreeNode>();

@@ -12,7 +12,7 @@ export async function GET() {
       id: a.id,
       name: a.name,
       description: a.description || "",
-      model: a.model_override || "google/gemini-2.5-flash",
+      model: a.battle_model || "google/gemini-2.5-flash",
     }));
 
   return NextResponse.json({ agents: trading });

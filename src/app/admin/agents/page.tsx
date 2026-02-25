@@ -59,6 +59,8 @@ interface LiveOrderState {
   approvedAgents: Set<string>;
   flashGreen: Set<string>;
   flashRed: Set<string>;
+  agentProposal: { id: string; name: string; rank: string; type: string; parentId: string; description: string } | null;
+  agentDeleteProposal: { id: string; name: string; reason: string } | null;
 }
 
 interface PromptVersion {
@@ -532,10 +534,16 @@ function ApprovalBar({
 
   const allApproved = live.soldierUpdates.every(su => live.approvedAgents.has(su.agentId));
 
+  const headerText = live.agentProposal
+    ? "New Agent Proposal \u2014 awaiting approval"
+    : live.agentDeleteProposal
+    ? "Agent Deletion Proposal \u2014 awaiting approval"
+    : `Order Complete \u2014 ${live.soldierUpdates.length} agent${live.soldierUpdates.length > 1 ? "s" : ""} updated`;
+
   return (
     <div className="rounded-xl border border-neutral-700 bg-neutral-900/90 p-5 mt-4">
       <div className="text-xs font-bold text-neutral-300 uppercase tracking-wider mb-3">
-        Order Complete &mdash; {live.soldierUpdates.length} agent{live.soldierUpdates.length > 1 ? "s" : ""} updated
+        {headerText}
       </div>
       <div className="space-y-1.5 mb-4">
         {live.soldierUpdates.map(su => (
@@ -626,7 +634,7 @@ function AgentDetailPanel({
 }: {
   agentId: string; onClose: () => void; onSaved: () => void; isAdmin: boolean;
 }) {
-  const [agent, setAgent] = useState<{ name: string; rank: string; description: string; model_override: string | null; is_active: number } | null>(null);
+  const [agent, setAgent] = useState<{ name: string; rank: string; type: string; description: string; model_override: string | null; battle_model: string | null; is_active: number } | null>(null);
   const [ownPrompt, setOwnPrompt] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
   const [sections, setSections] = useState<EffectivePromptSection[]>([]);
@@ -637,9 +645,11 @@ function AgentDetailPanel({
   const [notes, setNotes] = useState("");
   const [tab, setTab] = useState<"effective" | "edit" | "history" | "activity">("effective");
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showBattleModelPicker, setShowBattleModelPicker] = useState(false);
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null);
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
   const [copied, setCopied] = useState(false);
+  const [qaAutoAccept, setQaAutoAccept] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -656,6 +666,14 @@ function AgentDetailPanel({
       setSections(epData.sections || []);
       setVersions(agentData.history || []);
       setRelatedOrders(agentData.relatedOrders || []);
+      // Load QA auto-accept config for trade_reviewer
+      if (agentId === "trade_reviewer") {
+        try {
+          const configRes = await fetch("/api/admin/config?key=qa_auto_accept");
+          const configData = await configRes.json();
+          setQaAutoAccept(configData.value === "true");
+        } catch { /* ignore */ }
+      }
     } catch { /* ignore */ }
     setLoading(false);
   }, [agentId]);
@@ -702,6 +720,19 @@ function AgentDetailPanel({
     } catch { /* ignore */ }
   };
 
+  const handleSaveBattleModel = async (model: string) => {
+    try {
+      await fetch(`/api/admin/agents/${agentId}/battle-model`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+      setShowBattleModelPicker(false);
+      await load();
+      onSaved();
+    } catch { /* ignore */ }
+  };
+
   const handleCopyFullPrompt = async () => {
     const fullPrompt = sections.map(s => s.promptText).join("\n\n---\n\n");
     await navigator.clipboard.writeText(fullPrompt);
@@ -741,10 +772,10 @@ function AgentDetailPanel({
             </div>
             <button onClick={onClose} className="text-neutral-500 hover:text-neutral-300 text-xl">&times;</button>
           </div>
-          {/* Model — direct per-agent model */}
+          {/* Model — direct per-agent model (Command Center) */}
           <div className="mt-3">
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider">Model:</span>
+              <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider">{agent?.rank === "soldier" && agent?.type === "trading" ? "Command Model:" : "Model:"}</span>
               <span className="text-xs text-neutral-200 font-medium">{getModelLabel(agent?.model_override || "")}</span>
               {isAdmin && !showModelPicker && (
                 <button onClick={() => setShowModelPicker(true)}
@@ -764,6 +795,53 @@ function AgentDetailPanel({
               </div>
             )}
           </div>
+          {/* Battle Model — only for trading soldiers */}
+          {agent?.rank === "soldier" && agent?.type === "trading" && (
+            <div className="mt-2">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider">Battle Model:</span>
+                <span className="text-xs text-neutral-200 font-medium">{getModelLabel(agent?.battle_model || "google/gemini-2.5-flash")}</span>
+                {isAdmin && !showBattleModelPicker && (
+                  <button onClick={() => setShowBattleModelPicker(true)}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 font-semibold ml-1">
+                    Change
+                  </button>
+                )}
+              </div>
+              {isAdmin && showBattleModelPicker && (
+                <div className="max-w-sm">
+                  <ModelSelector
+                    value={agent?.battle_model || "google/gemini-2.5-flash"}
+                    onChange={handleSaveBattleModel}
+                    compact
+                    variant="battle"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {/* QA Auto-accept toggle — only for trade_reviewer */}
+          {agentId === "trade_reviewer" && isAdmin && (
+            <div className="mt-3 flex items-center gap-2">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={qaAutoAccept}
+                  onChange={async () => {
+                    const next = !qaAutoAccept;
+                    setQaAutoAccept(next);
+                    try {
+                      await fetch("/api/admin/config", {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ key: "qa_auto_accept", value: next ? "true" : "false" }),
+                      });
+                    } catch { /* ignore */ }
+                  }}
+                  className="w-3.5 h-3.5 rounded border-neutral-600 bg-neutral-800 text-purple-500 focus:ring-purple-500/30 accent-purple-500" />
+                <span className="text-xs text-neutral-400">QA Auto-accept</span>
+              </label>
+              <span className="text-[10px] text-neutral-600">Auto-apply QA recommendations after battle review</span>
+            </div>
+          )}
         </div>
 
         {/* Tabs */}
@@ -1010,6 +1088,7 @@ export default function CommandCenterPage() {
       step: "commander", commanderMessage: msg, generalResponse: null, delegation: null,
       lieutenantResponse: null, soldierUpdates: [], orderId: null, status: "pending",
       error: null, activePath: ["general"], approvedAgents: new Set(), flashGreen: new Set(), flashRed: new Set(),
+      agentProposal: null, agentDeleteProposal: null,
     });
 
     try {
@@ -1029,7 +1108,34 @@ export default function CommandCenterPage() {
         error: !data.generalResponse ? (data.error || "The General failed to respond") : (data.error && !data.delegation ? data.error : null),
       } : null);
 
-      if (data.delegation) {
+      // Handle agent create/delete (no delegation path)
+      if (data.agentCreated || data.agentDeleted || data.agentProposal || data.agentDeleteProposal) {
+        await new Promise(r => setTimeout(r, 600));
+
+        if (data.status === "executed") {
+          // Auto-approved: show success, refresh tree
+          const allIds = (data.soldierUpdates || []).map((su: SoldierUpdate) => su.agentId);
+          setLive(prev => prev ? {
+            ...prev, step: "done", status: "executed",
+            soldierUpdates: data.soldierUpdates || [],
+            approvedAgents: new Set(allIds), flashGreen: new Set(allIds), activePath: [],
+            agentProposal: data.agentProposal || null,
+            agentDeleteProposal: data.agentDeleteProposal || null,
+            error: null,
+          } : null);
+          await loadData();
+          setTimeout(() => { setLive(prev => prev ? { ...prev, flashGreen: new Set() } : null); }, 2000);
+        } else {
+          // Manual approval needed: show soldier updates with approval bar
+          setLive(prev => prev ? {
+            ...prev, step: "approval",
+            soldierUpdates: data.soldierUpdates || [],
+            agentProposal: data.agentProposal || null,
+            agentDeleteProposal: data.agentDeleteProposal || null,
+            activePath: [],
+          } : null);
+        }
+      } else if (data.delegation) {
         await new Promise(r => setTimeout(r, 1200));
 
         // Show Lieutenant's response
@@ -1067,23 +1173,23 @@ export default function CommandCenterPage() {
             error: data.lieutenantResponse ? "Lieutenant responded but no soldier prompt changes were detected. The response may not have used the expected JSON format." : prev.error,
           } : null);
         }
+
+        if (data.status === "executed") {
+          const allIds = (data.soldierUpdates || []).map((su: SoldierUpdate) => su.agentId);
+          setLive(prev => prev ? {
+            ...prev, status: "executed", step: "done",
+            approvedAgents: new Set(allIds), flashGreen: new Set(allIds), activePath: [],
+            error: null,
+          } : null);
+          await loadData();
+          setTimeout(() => { setLive(prev => prev ? { ...prev, flashGreen: new Set() } : null); }, 2000);
+        }
       } else if (!data.error) {
         // General responded but no delegation identified
         setLive(prev => prev ? {
           ...prev,
           error: "The General responded but did not delegate to a Lieutenant. This may mean the order was unclear or the General's response didn't use the expected DELEGATION format.",
         } : null);
-      }
-
-      if (data.status === "executed") {
-        const allIds = (data.soldierUpdates || []).map((su: SoldierUpdate) => su.agentId);
-        setLive(prev => prev ? {
-          ...prev, status: "executed", step: "done",
-          approvedAgents: new Set(allIds), flashGreen: new Set(allIds), activePath: [],
-          error: null,
-        } : null);
-        await loadData();
-        setTimeout(() => { setLive(prev => prev ? { ...prev, flashGreen: new Set() } : null); }, 2000);
       }
     } catch (err) {
       console.error("[WAR ROOM] Command failed:", err);

@@ -72,6 +72,7 @@ export interface StandingEntry {
   model: string;
   strategy: string;
   totalTrades: number;
+  successfulTrades: number;
 }
 
 export interface AgentStrategyRec {
@@ -124,11 +125,42 @@ export interface NpcConfig {
 // ------ Constants ------
 
 export const STARTING_CASH = 100_000;
-export const TOTAL_ROUNDS = 3;
-export const TRADING_DURATION = 60; // seconds
-export const COUNTDOWN_DURATION = 10; // seconds
-export const ROUND_END_DURATION = 4; // seconds
-export const TICK_INTERVAL = 2; // seconds
+export const TOTAL_ROUNDS = 1; // single continuous session — kept for backward compat with match-results API
+export const INITIAL_COUNTDOWN = 10;      // seconds before trading
+export const TRADING_DURATION = 110;      // total trading session seconds
+export const TICK_INTERVAL = 2;           // price drift tick seconds
+export const PRICE_REACTION_DELAY = 10;   // news → price delay seconds (10s lag for traders to process)
+export const NEWS_PREFETCH_LEAD = 5;      // prefetch before event seconds
+
+export const NUM_EVENTS = 5;
+export const EVENT_INTERVAL = 20;
+export const EVENT_TIMES = [0, 20, 40, 60, 80] as const;
+export const PRICE_IMPACT_TIMES = [10, 30, 50, 70, 90] as const;
+export const EVENT_TYPES: ("macro" | "company")[] = ["macro", "company", "macro", "company", "macro"];
+
+// Legacy aliases for backward compat
+export const COUNTDOWN_DURATION = INITIAL_COUNTDOWN;
+export const ROUND_END_DURATION = 4; // unused but kept for any straggler imports
+
+// ------ Event Schedule ------
+
+export interface EventScheduleEntry {
+  index: number;
+  type: "macro" | "company";
+  time: number;
+  priceImpactTime: number;
+  prefetchTime: number;
+}
+
+export function buildEventSchedule(): EventScheduleEntry[] {
+  return EVENT_TIMES.map((time, i) => ({
+    index: i,
+    type: EVENT_TYPES[i],
+    time,
+    priceImpactTime: PRICE_IMPACT_TIMES[i],
+    prefetchTime: Math.max(0, time - NEWS_PREFETCH_LEAD),
+  }));
+}
 
 // ------ Severity ranges (base_impact_pct magnitude) ------
 
@@ -158,11 +190,16 @@ const SECTOR_MODIFIERS: Record<string, Record<string, number>> = {
   dollar_weakens:     { energy: 0.5, tech: 0.4, consumer: -0.3, finance: -0.5, healthcare: 0.1 },
 };
 
-// ------ News escalation by round ------
+// ------ News escalation by event index ------
 
+/** @deprecated Use getSeverityForEvent instead */
 export function getSeverityForRound(round: number): NewsSeverity {
-  if (round <= 1) return pickRandom(["LOW", "MODERATE"] as NewsSeverity[]);
-  if (round === 2) return pickRandom(["MODERATE", "HIGH"] as NewsSeverity[]);
+  return getSeverityForEvent(round - 1);
+}
+
+export function getSeverityForEvent(eventIndex: number): NewsSeverity {
+  if (eventIndex <= 1) return pickRandom(["LOW", "MODERATE"] as NewsSeverity[]);
+  if (eventIndex <= 3) return pickRandom(["MODERATE", "HIGH"] as NewsSeverity[]);
   return pickRandom(["HIGH", "EXTREME"] as NewsSeverity[]);
 }
 
@@ -171,8 +208,9 @@ function getImpactFromSeverity(severity: NewsSeverity): number {
   return min + Math.random() * (max - min);
 }
 
-// Company news scale factor per round (escalation)
-const COMPANY_ROUND_SCALE = [0.8, 1.0, 1.5];
+// Company news scale factor per event (escalation)
+export const COMPANY_EVENT_SCALE = [0.8, 0.9, 1.0, 1.2, 1.5];
+// COMPANY_ROUND_SCALE removed — use COMPANY_EVENT_SCALE instead
 
 // ------ Helpers ------
 
@@ -541,9 +579,7 @@ const FALLBACK_NPC_PROMPT = `You are a competitive AI trader. Make trading decis
 const LEGACY_NPC_DEFS = [
   { id: "npc-alpha", name: "Momentum Trader", strategy: "momentum_trader", strategyLabel: "Momentum", maxTrades: 3, registryId: "momentum_trader" },
   { id: "npc-beta", name: "Contrarian", strategy: "contrarian", strategyLabel: "Contrarian", maxTrades: 2, registryId: "contrarian" },
-  { id: "npc-gamma", name: "Blitz Trader", strategy: "scalper", strategyLabel: "Blitz Trader", maxTrades: 3, registryId: "scalper" },
-  { id: "npc-delta", name: "News Sniper", strategy: "news_sniper", strategyLabel: "News Sniper", maxTrades: 2, registryId: "news_sniper" },
-  { id: "npc-epsilon", name: "YOLO Trader", strategy: "yolo_trader", strategyLabel: "YOLO", maxTrades: 2, registryId: "yolo_trader" },
+  { id: "npc-gamma", name: "YOLO Trader", strategy: "yolo_trader", strategyLabel: "YOLO", maxTrades: 2, registryId: "yolo_trader" },
 ];
 
 export function createNpcAgents(configs: NpcConfig[]): NpcAgent[] {
@@ -858,7 +894,7 @@ const COMPANY_NEWS_TEMPLATES: CompanyNewsTemplate[] = [
   { template: "{TICKER} named top {SUBSECTOR} innovator by industry analysts", impact: 0.05, category: "sector_news" },
 ];
 
-export function pickMacroNews(usedIndices: Set<number>, round: number = 1): { event: NewsEvent; index: number } | null {
+export function pickMacroNews(usedIndices: Set<number>, eventIndex: number = 0): { event: NewsEvent; index: number } | null {
   const available = MACRO_NEWS_CATALOG
     .map((_, i) => i)
     .filter((i) => !usedIndices.has(i));
@@ -868,11 +904,11 @@ export function pickMacroNews(usedIndices: Set<number>, round: number = 1): { ev
   const idx = available[Math.floor(Math.random() * available.length)];
   const entry = MACRO_NEWS_CATALOG[idx];
 
-  // Escalation: severity and impact magnitude scale with round
-  const severity = getSeverityForRound(round);
+  // Escalation: severity and impact magnitude scale with event index
+  const severity = getSeverityForEvent(eventIndex);
   const base_impact_pct = getImpactFromSeverity(severity);
 
-  console.log(`[NEWS] Macro: "${entry.headline}" | Round ${round} | Severity: ${severity} | Base impact: ${(base_impact_pct * 100).toFixed(2)}% | Keyword: ${entry.sector_keyword}`);
+  console.log(`[NEWS] Macro: "${entry.headline}" | Event ${eventIndex + 1}/${NUM_EVENTS} | Severity: ${severity} | Base impact: ${(base_impact_pct * 100).toFixed(2)}% | Keyword: ${entry.sector_keyword}`);
 
   return {
     event: {
@@ -892,9 +928,9 @@ export function pickMacroNews(usedIndices: Set<number>, round: number = 1): { ev
 export function generateCompanyNews(
   stocks: BattleStock[],
   usedTickers: string[],
-  round: number = 1
+  eventIndex: number = 0
 ): { event: NewsEvent; tickerAffected: string } | null {
-  const availableStocks = stocks.filter((s) => !usedTickers.includes(s.ticker));
+  const availableStocks = stocks.filter((s) => s.ticker !== "SPY");
   if (availableStocks.length === 0) return null;
 
   const stock = pickRandom(availableStocks);
@@ -907,9 +943,9 @@ export function generateCompanyNews(
     .replace(/\{SECTOR\}/g, sectorLabel)
     .replace(/\{SUBSECTOR\}/g, subSectorLabel);
 
-  // Scale impact by round (escalation)
-  const roundScale = COMPANY_ROUND_SCALE[Math.min(round - 1, COMPANY_ROUND_SCALE.length - 1)];
-  const primary_impact_pct = template.impact * roundScale;
+  // Scale impact by event index (escalation)
+  const eventScale = COMPANY_EVENT_SCALE[Math.min(eventIndex, COMPANY_EVENT_SCALE.length - 1)];
+  const primary_impact_pct = template.impact * eventScale;
 
   // Sector impacts kept for NPC fallback context
   const sectorImpacts: Record<string, number> = {
@@ -920,8 +956,8 @@ export function generateCompanyNews(
     : Math.abs(primary_impact_pct) >= 0.04 ? "MODERATE" : "LOW";
 
   console.log(
-    `[NEWS] Company: "${headline}" | Target: ${stock.ticker} | Round ${round} | ` +
-    `Primary impact: ${(primary_impact_pct * 100).toFixed(2)}% | Scale: ${roundScale}x`
+    `[NEWS] Company: "${headline}" | Target: ${stock.ticker} | Event ${eventIndex + 1}/${NUM_EVENTS} | ` +
+    `Primary impact: ${(primary_impact_pct * 100).toFixed(2)}% | Scale: ${eventScale}x`
   );
 
   return {
@@ -965,7 +1001,8 @@ export function computeStandings(
   stocks: BattleStock[],
   userModel: string,
   userStrategy: string,
-  userTotalTrades: number
+  userTotalTrades: number,
+  successfulTradesMap?: Map<string, number>
 ): StandingEntry[] {
   const entries: StandingEntry[] = [];
 
@@ -979,6 +1016,7 @@ export function computeStandings(
     model: userModel,
     strategy: userStrategy,
     totalTrades: userTotalTrades,
+    successfulTrades: successfulTradesMap?.get(userName) ?? 0,
   });
 
   for (const npc of npcs) {
@@ -992,6 +1030,7 @@ export function computeStandings(
       model: npc.model,
       strategy: npc.strategyLabel,
       totalTrades: npc.tradeCount,
+      successfulTrades: successfulTradesMap?.get(npc.name) ?? 0,
     });
   }
 
@@ -1031,21 +1070,9 @@ export function computeBestWorstTrade(
 }
 
 // ------ NPC trade scheduling ------
+// NPCs now trade reactively per event — this is a stub for backward compat
 
-export function scheduleNpcTrades(npcs: NpcAgent[]): Record<string, number[]> {
-  const schedule: Record<string, number[]> = {};
-
-  for (const npc of npcs) {
-    const numTrades = 1 + Math.floor(Math.random() * npc.maxTradesPerRound);
-    const times: number[] = [];
-    for (let i = 0; i < numTrades; i++) {
-      const windowStart = (TRADING_DURATION / numTrades) * i + 3;
-      const windowEnd = (TRADING_DURATION / numTrades) * (i + 1) - 2;
-      times.push(Math.floor(windowStart + Math.random() * Math.max(1, windowEnd - windowStart)));
-    }
-    times.sort((a, b) => a - b);
-    schedule[npc.id] = times;
-  }
-
-  return schedule;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function scheduleNpcTrades(_npcs: NpcAgent[]): Record<string, number[]> {
+  return {};
 }

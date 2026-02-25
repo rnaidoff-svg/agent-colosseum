@@ -41,6 +41,12 @@ interface NpcTradeRequestBody {
     changePct: number;
   }[];
   newsEvents: { headline: string; sectorImpacts: Record<string, number> }[];
+  latestEvent?: {
+    headline: string;
+    eventIndex: number;
+    newsType: string;
+    targetTicker?: string | null;
+  };
   portfolio: {
     cash: number;
     positions: Record<string, { qty: number; side: string; avgCost: number }>;
@@ -98,7 +104,7 @@ async function callOpenRouter(
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as NpcTradeRequestBody;
-    const { agent, stocks, newsEvents, portfolio, standings, totalValue } = body;
+    const { agent, stocks, newsEvents, latestEvent, portfolio, standings, totalValue } = body;
 
     const apiKey = process.env.OPENROUTER_API_KEY || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -155,20 +161,33 @@ export async function POST(request: NextRequest) {
       }).join("\n");
     }
 
-    const newsSummary = newsEvents.length > 0
-      ? newsEvents.map((n) => `"${n.headline}"`).join(" | ")
-      : "No news";
+    // Build news context with clear latest event highlighting
+    const priorEvents = latestEvent
+      ? newsEvents.filter((_, i) => i < newsEvents.length - 1)
+      : newsEvents;
+    const priorSummary = priorEvents.length > 0
+      ? priorEvents.map((n) => `"${n.headline}"`).join(" | ")
+      : "";
 
     const competitorBlock = standings.length > 0
       ? standings.map(s => `  - ${s.name}${s.model ? ` (${s.model})` : ""}: ${s.pnlPct != null ? `${(s.pnlPct * 100).toFixed(2)}%` : `${s.pnl >= 0 ? "+" : ""}$${s.pnl.toFixed(0)}`} return`).join("\n")
       : "  No data";
 
+    // Build the latest event block prominently
+    const latestEventBlock = latestEvent
+      ? `\n>>> NEW EVENT (Event #${latestEvent.eventIndex + 1}) — REACT TO THIS <<<
+"${latestEvent.headline}"
+Type: ${latestEvent.newsType === "company_specific" ? "COMPANY-SPECIFIC" : latestEvent.newsType === "macro" ? "MACRO" : latestEvent.newsType}${latestEvent.targetTicker ? ` | Target: ${latestEvent.targetTicker}` : ""}
+IMPORTANT: Stock prices shown below have NOT yet moved in response to this event. Prices will change in ~10 seconds.
+You must decide NOW how you think each stock will move based on this news, and trade BEFORE prices change.`
+      : "";
+
     const systemPrompt = `${effectivePrompt}
 
-CURRENT MARKET STATE:
+CURRENT MARKET STATE (prices are PRE-NEWS — they have not reacted to the latest event yet):
 ${stockSummary}
-
-NEWS THIS ROUND: ${newsSummary}
+${priorSummary ? `\nPRIOR NEWS (already priced in): ${priorSummary}` : ""}
+${latestEventBlock}
 
 YOUR CURRENT PORTFOLIO:
 ${positionBlock}
@@ -179,20 +198,21 @@ Total Return: ${returnPct >= 0 ? "+" : ""}${returnPct.toFixed(2)}%
 COMPETITOR STANDINGS:
 ${competitorBlock}
 
-You are a PORTFOLIO MANAGER. You MUST make a decision on EVERY SINGLE SECURITY in this match.
+You are a PORTFOLIO MANAGER reacting to the latest market event. You MUST make a decision on EVERY SINGLE SECURITY.
 
 For EACH security: LONG (buy), SHORT (sell short), HOLD (keep existing), CLOSE_LONG/CLOSE_SHORT (exit position), or SKIP (no action).
+Your trades execute at CURRENT prices (before the market reacts). This is your edge — trade on the news before prices move.
 
 Respond with ONLY a JSON object:
-{"trades": [{"action": "LONG" or "SHORT" or "CLOSE_LONG" or "CLOSE_SHORT", "ticker": "SYMBOL", "qty": NUMBER}], "skips": [{"ticker": "SYMBOL", "reason": "why"}], "reasoning": "1-2 sentences covering ALL securities"}
+{"trades": [{"action": "LONG" or "SHORT" or "CLOSE_LONG" or "CLOSE_SHORT", "ticker": "SYMBOL", "qty": NUMBER}], "skips": [{"ticker": "SYMBOL", "reason": "why"}], "reasoning": "1-2 sentences explaining your reaction to the NEW event"}
 
 Rules:
 - Address ALL ${stocks.length} securities — trade or skip each one
 - Only use tickers from the stocks listed
 - qty must be > 0 and affordable (each share costs its current price)
-- 2-5 trades recommended, spread across sectors
-- Deploy 60-80% of available capital
-- If holding all positions unchanged, return empty trades array with reasoning explaining WHY`;
+- 1-2 trades (only 2 securities). Concentrate positions.
+- Deploy 60-80% of available capital on concentrated positions.
+- React to the NEW event — this is why you're being called`;
 
     const result = await callOpenRouter(apiKey, effectiveModel, [
       { role: "system", content: systemPrompt },

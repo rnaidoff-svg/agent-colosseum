@@ -41,6 +41,11 @@ interface StrategyRequestBody {
   customPrompt?: string; // user's custom text for custom strategy
   stocks: StockInfo[];
   newsEvents: { headline: string; sectorImpacts: Record<string, number> }[];
+  latestEvent?: {
+    headline: string;
+    eventIndex: number;
+    newsType: string;
+  };
   portfolio: {
     cash: number;
     positions: Record<string, { qty: number; side: string; avgCost: number }>;
@@ -189,7 +194,7 @@ You MUST address ALL securities. Consider ALL news events this round, your exist
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as StrategyRequestBody;
-    const { model, systemPrompt, userStrategy, customPrompt, stocks, newsEvents, portfolio, standings, totalValue, isUpdate, messages } = body;
+    const { model, systemPrompt, userStrategy, customPrompt, stocks, newsEvents, latestEvent, portfolio, standings, totalValue, isUpdate, messages } = body;
 
     const apiKey = process.env.OPENROUTER_API_KEY || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -204,32 +209,43 @@ export async function POST(request: NextRequest) {
       .map((s) => `${s.ticker} "${s.name}" (${s.sector}) | Price: $${s.price.toFixed(2)} | Change: ${s.changePct >= 0 ? "+" : ""}${(s.changePct * 100).toFixed(2)}% | Beta: ${s.beta} | MCap: ${s.marketCap} | P/E: ${s.peRatio} | EPS: $${s.eps} | D/EBITDA: ${s.debtEbitda}`)
       .join("\n");
 
-    const newsSummary = newsEvents.length > 0
-      ? newsEvents.map((n) => {
+    // Split news into prior (priced in) and latest (not yet priced in)
+    const priorEvents = latestEvent
+      ? newsEvents.filter((_, i) => i < newsEvents.length - 1)
+      : newsEvents;
+    const priorNewsSummary = priorEvents.length > 0
+      ? priorEvents.map((n) => {
           const impacts = Object.entries(n.sectorImpacts)
             .filter(([s]) => s !== "index")
             .map(([sector, impact]) => `${sector} ${impact > 0 ? "+" : ""}${(impact * 100).toFixed(1)}%`)
             .join(", ");
           return `"${n.headline}" [${impacts}]`;
         }).join("\n")
-      : "No current news events.";
+      : "";
+
+    const latestEventBlock = latestEvent
+      ? `\n>>> NEW EVENT (Event #${latestEvent.eventIndex + 1}) — REACT TO THIS <<<\n"${latestEvent.headline}"\nType: ${latestEvent.newsType === "company_specific" ? "COMPANY-SPECIFIC" : latestEvent.newsType === "macro" ? "MACRO" : latestEvent.newsType}\nIMPORTANT: Stock prices shown above have NOT yet moved in response to this event. Prices will change in ~10 seconds.\nYou must decide NOW how stocks will move and trade BEFORE prices change.`
+      : "";
+
+    const newsSummary = latestEvent
+      ? (priorNewsSummary ? `PRIOR NEWS (already priced in):\n${priorNewsSummary}\n${latestEventBlock}` : latestEventBlock)
+      : (priorNewsSummary || "No current news events.");
 
     const portfolioContext = buildPortfolioContext(stocks, portfolio, standings, totalValue || 100000);
 
     if (isUpdate) {
       const updatePrompt = `${effectivePrompt}
 
-CURRENT MARKET STATE:
+CURRENT MARKET STATE (prices are PRE-NEWS — they have NOT reacted to the latest event yet):
 ${stockSummary}
 
-NEWS EVENTS THIS ROUND:
 ${newsSummary}
 
 ${portfolioContext}
 
 ${PORTFOLIO_MANAGER_INSTRUCTIONS}
 
-New news just dropped. Review ALL your existing positions and the new information. Recommend any urgent portfolio adjustments.
+A new market event just dropped. Your trades execute at CURRENT prices (before the market reacts). This is your edge — trade on the news before prices move. Review your existing positions and react to the NEW event.
 
 You MUST respond with a JSON block:
 \`\`\`json
@@ -300,7 +316,7 @@ Rules:
 CURRENT MARKET STATE:
 ${stockSummary}
 
-NEWS EVENTS THIS ROUND:
+NEWS EVENTS:
 ${newsSummary}
 
 ${portfolioContext}

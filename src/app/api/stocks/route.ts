@@ -13,8 +13,8 @@ interface CuratedStock {
   subSector: string;
 }
 
-const STOCK_POOL: CuratedStock[] = [
-  // Tech
+// Mag 7 stocks — exactly 1 will be picked per match
+const MAG7_POOL: CuratedStock[] = [
   { symbol: "AAPL", sector: "tech", subSector: "Consumer Electronics" },
   { symbol: "MSFT", sector: "tech", subSector: "Cloud Computing" },
   { symbol: "GOOGL", sector: "tech", subSector: "AI/ML" },
@@ -22,7 +22,15 @@ const STOCK_POOL: CuratedStock[] = [
   { symbol: "META", sector: "tech", subSector: "Social Media" },
   { symbol: "AMZN", sector: "tech", subSector: "E-Commerce" },
   { symbol: "TSLA", sector: "tech", subSector: "Electric Vehicles" },
+];
+
+// S&P 500 stocks (non-Mag7) — 3 random picks per match
+const SP500_POOL: CuratedStock[] = [
+  // Tech (non-Mag7)
   { symbol: "AMD", sector: "tech", subSector: "Semiconductors" },
+  { symbol: "CRM", sector: "tech", subSector: "Enterprise Software" },
+  { symbol: "INTC", sector: "tech", subSector: "Semiconductors" },
+  { symbol: "ORCL", sector: "tech", subSector: "Enterprise Software" },
   // Energy
   { symbol: "XOM", sector: "energy", subSector: "Oil & Gas" },
   { symbol: "CVX", sector: "energy", subSector: "Oil & Gas" },
@@ -53,7 +61,38 @@ const STOCK_POOL: CuratedStock[] = [
   { symbol: "MCD", sector: "consumer", subSector: "Food & Beverage" },
   { symbol: "DIS", sector: "consumer", subSector: "Entertainment" },
   { symbol: "PG", sector: "consumer", subSector: "Consumer Goods" },
+  // Industrial / Other S&P 500
+  { symbol: "BA", sector: "tech", subSector: "Aerospace" },
+  { symbol: "CAT", sector: "energy", subSector: "Industrial Equipment" },
+  { symbol: "DE", sector: "consumer", subSector: "Agriculture Equipment" },
+  { symbol: "HON", sector: "tech", subSector: "Industrial Tech" },
+  { symbol: "UPS", sector: "consumer", subSector: "Logistics" },
 ];
+
+// Ultra volatile small cap stocks — 1 random pick per match
+const SMALLCAP_POOL: CuratedStock[] = [
+  { symbol: "MARA", sector: "finance", subSector: "Crypto Mining" },
+  { symbol: "RIOT", sector: "finance", subSector: "Crypto Mining" },
+  { symbol: "SMCI", sector: "tech", subSector: "Server Hardware" },
+  { symbol: "SOUN", sector: "tech", subSector: "Voice AI" },
+  { symbol: "IONQ", sector: "tech", subSector: "Quantum Computing" },
+  { symbol: "AFRM", sector: "finance", subSector: "Buy Now Pay Later" },
+  { symbol: "UPST", sector: "finance", subSector: "AI Lending" },
+  { symbol: "PLUG", sector: "energy", subSector: "Hydrogen Fuel Cells" },
+  { symbol: "RIVN", sector: "tech", subSector: "Electric Vehicles" },
+  { symbol: "LCID", sector: "tech", subSector: "Electric Vehicles" },
+  { symbol: "SOFI", sector: "finance", subSector: "Digital Banking" },
+  { symbol: "RKLB", sector: "tech", subSector: "Space Launch" },
+  { symbol: "DNA", sector: "healthcare", subSector: "Synthetic Biology" },
+  { symbol: "OPEN", sector: "tech", subSector: "PropTech" },
+  { symbol: "CLOV", sector: "healthcare", subSector: "Health Insurance Tech" },
+];
+
+// Combined pool for AI reference (all stocks the AI can see)
+const STOCK_POOL: CuratedStock[] = [...MAG7_POOL, ...SP500_POOL, ...SMALLCAP_POOL];
+
+// Full S&P 500 pool for 2-stock selection (1 random pick + SPY)
+const FULL_SP500_POOL: CuratedStock[] = [...MAG7_POOL, ...SP500_POOL];
 
 // ------ Types ------
 
@@ -120,7 +159,7 @@ function capCategory(millions: number): "Small" | "Mid" | "Large" {
 // ------ Session cache ------
 let cachedStocks: StockResult[] | null = null;
 let cachedAt = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 30 * 1000; // 30 seconds — short so each match gets fresh picks
 
 // ------ Finnhub fetch helpers ------
 
@@ -255,15 +294,13 @@ export async function GET(request: NextRequest) {
 
   const apiKey = process.env.FINNHUB_API_KEY;
   if (!apiKey) {
-    // No API key — generate 5 fake stocks + fake SPY
+    // No API key — generate 1 fake stock + fake SPY
     console.warn("[stocks] No FINNHUB_API_KEY set, generating fake stocks");
     const usedTickers = new Set<string>();
     const sectors = ["tech", "energy", "finance", "healthcare", "consumer"];
     const fakes: StockResult[] = [];
-    for (let i = 0; i < 5; i++) {
-      const sector = sectors[i % sectors.length];
-      fakes.push(generateFakeStock(sector, sector, usedTickers));
-    }
+    const sector = sectors[Math.floor(Math.random() * sectors.length)];
+    fakes.push(generateFakeStock(sector, sector, usedTickers));
     // Add fake SPY
     fakes.push({
       ticker: "SPY", name: "S&P 500 ETF", sector: "index", subSector: "Market Index",
@@ -275,7 +312,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ stocks: fakes });
   }
 
-  // Try AI Stock Selector agent from registry, fallback to random
+  // --- Stock Selection: 1 Mag7 + 3 random S&P500 + 1 volatile small cap ---
+  // Try AI Stock Selector agent, fallback to deterministic random
   let selected: CuratedStock[] = [];
   try {
     const orApiKey = process.env.OPENROUTER_API_KEY || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY;
@@ -288,8 +326,17 @@ export async function GET(request: NextRequest) {
       console.log(`[stocks] Using Stock Selector Agent v${version}, model: ${selectorModel}`);
 
       const randomSeed = Math.floor(Math.random() * 100000);
-      const poolSummary = STOCK_POOL.map((s) => `${s.symbol} (${s.sector}/${s.subSector})`).join(", ");
-      const userMsg = `Available stock pool: ${poolSummary}\n\nRandom seed: ${randomSeed} — use this to vary your picks.\nPick exactly 5 tickers. Respond with ONLY a JSON array of ticker strings: ["AAPL", "XOM", "JPM", "LLY", "COST"]`;
+      const sp500List = FULL_SP500_POOL.map((s) => `${s.symbol} (${s.sector}/${s.subSector})`).join(", ");
+
+      const userMsg = `Random seed: ${randomSeed} — you MUST use this to vary your picks. Never pick the same stock twice.
+
+MANDATORY RULES — follow exactly:
+1. Pick exactly 1 stock from the S&P 500 pool: ${sp500List}
+2. SPY is added automatically as the 2nd security — do NOT include it.
+
+Pick a stock that will create interesting trading dynamics with diverse news catalysts.
+
+Respond with ONLY a JSON array of exactly 1 ticker string, e.g.: ["NVDA"]`;
 
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
@@ -302,7 +349,7 @@ export async function GET(request: NextRequest) {
         body: JSON.stringify({ model: selectorModel, messages: [
           { role: "system", content: selectorPrompt },
           { role: "user", content: userMsg },
-        ], max_tokens: 128, temperature: 0.9 }),
+        ], max_tokens: 128, temperature: 1.0 }),
       });
 
       if (res.ok) {
@@ -313,44 +360,22 @@ export async function GET(request: NextRequest) {
           if (tickers && Array.isArray(tickers)) {
             const poolMap = new Map(STOCK_POOL.map((s) => [s.symbol, s]));
             const aiSelected = tickers.map((t: string) => poolMap.get(t.toUpperCase())).filter(Boolean) as CuratedStock[];
-            if (aiSelected.length >= 3) {
-              selected = aiSelected.slice(0, 5);
-              console.log(`[stocks] Stock Selector Agent (from registry) selected: ${selected.map((s) => s.symbol).join(", ")}`);
+            if (aiSelected.length >= 1) {
+              selected = aiSelected.slice(0, 1);
+              console.log(`[stocks] Stock Selector Agent picked: ${selected.map((s) => s.symbol).join(", ")}`);
             }
           }
         }
       }
     }
   } catch (err) {
-    console.log("[stocks] Falling back to hardcoded behavior for Stock Selector Agent:", err);
+    console.log("[stocks] Falling back to random selection:", err);
   }
 
-  // Fallback: random selection with sector diversity guarantee
+  // Fallback: deterministic random — 1 random S&P 500 stock
   if (selected.length === 0) {
-    // Pick one from each sector first, then fill remaining randomly
-    const sectors = Array.from(new Set(STOCK_POOL.map((s) => s.sector)));
-    const bySector: Record<string, CuratedStock[]> = {};
-    for (const s of STOCK_POOL) {
-      if (!bySector[s.sector]) bySector[s.sector] = [];
-      bySector[s.sector].push(s);
-    }
-    const picks: CuratedStock[] = [];
-    const usedSymbols = new Set<string>();
-    // One random stock per sector
-    for (const sec of sectors.sort(() => Math.random() - 0.5)) {
-      const pool = bySector[sec];
-      const pick = pool[Math.floor(Math.random() * pool.length)];
-      picks.push(pick);
-      usedSymbols.add(pick.symbol);
-      if (picks.length >= 5) break;
-    }
-    // Fill remaining from pool
-    const remaining = STOCK_POOL.filter((s) => !usedSymbols.has(s.symbol));
-    while (picks.length < 5 && remaining.length > 0) {
-      const idx = Math.floor(Math.random() * remaining.length);
-      picks.push(remaining.splice(idx, 1)[0]);
-    }
-    selected = picks;
+    const pick = FULL_SP500_POOL[Math.floor(Math.random() * FULL_SP500_POOL.length)];
+    selected = [pick];
     console.log(`[stocks] Random selection fallback: ${selected.map((s) => s.symbol).join(", ")}`);
   }
 
@@ -372,7 +397,7 @@ export async function GET(request: NextRequest) {
     await new Promise((r) => setTimeout(r, 120));
   }
 
-  // Always add SPY as 6th stock
+  // Always add SPY as 2nd stock
   const spy = await fetchSPY(apiKey);
   if (spy) {
     results.push(spy);
